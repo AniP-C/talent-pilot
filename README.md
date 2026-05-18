@@ -10,6 +10,14 @@ A local job-search assistant with a Streamlit dashboard, FastAPI backend, Gemini
 - Sync recent Gmail recruiting emails and update application status.
 - Use a Chrome extension to detect job pages, analyze match score, save jobs, and draft application answers.
 
+## Demo Video
+
+Watch the project walkthrough on YouTube:
+
+```text
+Add your YouTube video link here
+```
+
 ## Project Structure
 
 ```text
