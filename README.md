@@ -13,10 +13,7 @@ A local job-search assistant with a Streamlit dashboard, FastAPI backend, Gemini
 ## Demo Video
 
 Watch the project walkthrough on YouTube:
-
-```text
-Add your YouTube video link here
-```
+[![Talent Pilot Demo](https://img.youtube.com/vi/dZEQe_gm0mY/maxresdefault.jpg)](https://youtu.be/dZEQe_gm0mY)
 
 ## Project Structure
 
