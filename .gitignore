@@ -1,0 +1,55 @@
+# Secrets and local credentials
+.env
+.env.*
+!.env.example
+credentials.json
+token.json
+client_secret*.json
+
+# Local databases and generated exports
+*.db
+*.sqlite
+*.sqlite3
+tracked_applications.csv
+
+# Private resume/profile data and generated memories
+data/*
+!data/.gitkeep
+!data/README.md
+
+# Local Chrome extension autofill profile
+extension/rules.js
+
+# Logs and runtime state
+logs/*
+!logs/.gitkeep
+*.log
+
+# Python cache/build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local scratch/test files
+random_test_modelu.py
+testing_jd.txt
