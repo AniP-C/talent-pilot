@@ -494,19 +494,27 @@ Example `/analyze-job` body:
 
 ## ☁️ Deploying
 
-For running this on a server, see **[DEPLOYMENT.md](DEPLOYMENT.md)** — it
-covers Docker, Oracle Cloud Always Free, Hugging Face Spaces, the hosted Gmail
-OAuth setup, TLS, backups, and a pre-flight checklist.
+See **[DEPLOYMENT.md](DEPLOYMENT.md)** for the full guide: Oracle Cloud Always
+Free, systemd services, Caddy for automatic HTTPS, the hosted Gmail OAuth
+setup, backups, and troubleshooting. No Docker needed.
 
-The short version:
+On a fresh Ubuntu server:
 
 ```bash
-docker compose up -d --build
+git clone https://github.com/AniP-C/talent-pilot.git && cd talent-pilot
 ```
 
-Before exposing it publicly, set `SIGNUP_CODE` (otherwise anyone can register
-and spend your Gemini quota), point `DATA_DIR` at persistent storage, and set
-`PUBLIC_URL` so Gmail uses the redirect OAuth flow instead of the desktop one.
+```bash
+sudo ./deploy/setup.sh yourdomain.duckdns.org
+```
+
+That installs both services under systemd, configures Caddy with a free TLS
+certificate, and generates a random invite code. Add your Gemini key to
+`/etc/talent-pilot/talent-pilot.env` and restart.
+
+Get a free subdomain from [DuckDNS](https://www.duckdns.org) first — without a
+domain there is no HTTPS, and Gmail sync cannot work at all because Google
+rejects bare IPs as OAuth redirect URIs.
 
 ---
 

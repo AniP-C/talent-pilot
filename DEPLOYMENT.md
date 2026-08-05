@@ -1,31 +1,31 @@
 # Deploying Talent Pilot
 
-How to run Talent Pilot on a server you control, and what to change before it
-faces the internet.
+Running Talent Pilot on a server you control — no Docker required.
 
 > **Verification status.** The application was exercised end-to-end in hosted
 > configuration on the author's machine: invite-code enforcement, per-IP rate
-> limiting behind a proxy header, CORS restriction, and both services running
-> under the exact commands the container uses. The **Docker image itself was
-> never built** — Docker Desktop would not start in that environment — so the
-> `Dockerfile`, `docker-compose.yml`, and `supervisord.conf` are
-> syntax-validated but untested. Build them once before trusting them.
+> limiting behind a proxy header, CORS restriction, and both services under
+> the exact commands the systemd units run. The **server bootstrap itself has
+> not been run on a live VM** — the shell script and unit files are
+> syntax-checked but untested against a real Oracle instance. Expect to fix
+> one or two small things the first time.
 
 ---
 
 ## Contents
 
 - [What you are deploying](#what-you-are-deploying)
-- [Pre-flight checklist](#pre-flight-checklist)
-- [Environment variables](#environment-variables)
-- [Option A — Oracle Cloud Always Free](#option-a--oracle-cloud-always-free)
-- [Option B — Hugging Face Spaces](#option-b--hugging-face-spaces)
-- [Option C — Any Docker host](#option-c--any-docker-host)
-- [Google OAuth for a hosted instance](#google-oauth-for-a-hosted-instance)
+- [Get a free domain first](#get-a-free-domain-first)
+- [Oracle Cloud Always Free](#oracle-cloud-always-free)
+- [The bootstrap script](#the-bootstrap-script)
+- [Manual setup](#manual-setup)
+- [Google OAuth for Gmail sync](#google-oauth-for-gmail-sync)
 - [Pointing the extension at your server](#pointing-the-extension-at-your-server)
+- [Operating it](#operating-it)
 - [Backups](#backups)
 - [Security checklist](#security-checklist)
 - [Troubleshooting](#troubleshooting)
+- [Appendix: Docker](#appendix-docker)
 
 ---
 
@@ -33,19 +33,23 @@ faces the internet.
 
 Two processes that share one filesystem:
 
-| Process | Port | Serves |
-| ------- | ---- | ------ |
-| Streamlit dashboard | 8501 | The web UI you sign in to |
-| FastAPI backend | 8000 | The Chrome extension |
+| Process | Bound to | Serves |
+| ------- | -------- | ------ |
+| FastAPI backend | `127.0.0.1:8000` | The Chrome extension |
+| Streamlit dashboard | `127.0.0.1:8501` | The web UI |
+| Caddy | `:80` / `:443` | TLS, and routing between the two |
 
-They **must** share storage — the dashboard writes resume profiles that the API
-reads, and both use the same per-user workspaces. Splitting them across
-machines without shared storage will not work.
+Both bind to localhost only. Caddy is the single public entrance, which means
+one hostname serves both: API paths go to 8000, everything else falls through
+to the dashboard.
 
-State lives entirely under `DATA_DIR`:
+They **must** share storage — the dashboard writes resume profiles the API
+reads. Splitting them across machines without shared storage will not work.
+
+All state lives under `DATA_DIR` (`/var/lib/talent-pilot`):
 
 ```text
-$DATA_DIR/
+/var/lib/talent-pilot/
 ├── users.db              accounts, tokens, failed sign-in records
 └── workspaces/<user_id>/
     ├── jobs.db
@@ -54,85 +58,60 @@ $DATA_DIR/
     └── gmail_token.json
 ```
 
-**This directory must be on persistent storage.** On a platform with an
-ephemeral filesystem, every redeploy deletes every account.
+---
 
-### Free hosting, honestly
+## Get a free domain first
 
-| Platform | Free? | Persistent disk | Verdict |
-| -------- | ----- | --------------- | ------- |
-| Oracle Cloud Always Free | Yes, indefinitely | Yes, 200 GB | Best fit; most setup |
-| Hugging Face Spaces | Yes | No (paid add-on) | Easiest; data resets |
-| Fly.io | No longer | Yes | Cheap, not free |
-| Render | Free tier exists | **No** on free | Data resets; also sleeps |
-| Railway | $5 credit, then paid | Yes | Good, not free |
-| Streamlit Community Cloud | Yes | No | **Cannot run the API at all** |
+You said you don't have one. **Get one anyway — it takes two minutes and
+without it Gmail sync cannot work at all.** Google will not accept a bare IP
+address as an OAuth redirect URI, and Let's Encrypt will not issue a
+certificate for an IP, so there is no HTTPS either.
 
-Free tiers change often — confirm current terms before committing.
+[DuckDNS](https://www.duckdns.org) is free, permanent, and needs no payment
+details:
+
+1. Sign in with GitHub or Google.
+2. Pick a subdomain, e.g. `talentpilot` → `talentpilot.duckdns.org`.
+3. Paste your server's public IP into the box and press **update ip**.
+
+That is the whole process. Use `talentpilot.duckdns.org` wherever this guide
+says `YOUR_DOMAIN`.
+
+> Deploying without a domain still works for the dashboard and the extension —
+> pass `--no-domain` to the setup script. You lose HTTPS and Gmail sync, and
+> your password crosses the network in the clear. Fine for a private trial on
+> a IP nobody knows; not fine for real use.
 
 ---
 
-## Pre-flight checklist
+## Oracle Cloud Always Free
 
-Before exposing anything:
-
-- [ ] `SIGNUP_CODE` set, or `REGISTRATION_CLOSED=true`
-- [ ] `GEMINI_API_KEY` supplied as a secret, never committed
-- [ ] `DATA_DIR` points at persistent storage
-- [ ] `PUBLIC_URL` set to the real HTTPS URL
-- [ ] `TRUST_PROXY_HEADERS=true` **only** if a reverse proxy sits in front
-- [ ] TLS terminated (Caddy, nginx + certbot, or the platform's own)
-- [ ] Google OAuth redirect URI registered, if using Gmail sync
-- [ ] A backup of `DATA_DIR` scheduled
-
-Set a billing cap on your Gemini key. An invite code limits who can register,
-but each account still spends your quota.
-
----
-
-## Environment variables
-
-| Variable | Default | Purpose |
-| -------- | ------- | ------- |
-| `GEMINI_API_KEY` | — | **Required.** Google AI Studio key |
-| `PUBLIC_URL` | empty | Public HTTPS base URL. Setting it switches Gmail to the redirect OAuth flow |
-| `SIGNUP_CODE` | empty | When set, registration requires this code |
-| `REGISTRATION_CLOSED` | `false` | `true` refuses all new accounts |
-| `DATA_DIR` | `./data` | Where accounts and workspaces live |
-| `LOG_DIR` | `./logs` | Where logs are written |
-| `TRUST_PROXY_HEADERS` | `false` | Honour `X-Forwarded-For`. Only behind a trusted proxy |
-| `MAX_LOGIN_ATTEMPTS` | `10` | Failures before lockout |
-| `LOGIN_LOCKOUT_MINUTES` | `15` | Lockout duration |
-| `TOKEN_TTL_DAYS` | `30` | Extension token lifetime |
-| `ALLOWED_ORIGIN_REGEX` | chrome-extension only | Origins allowed to call the API |
-| `GEMINI_MODEL` | `gemini-2.5-flash-lite` | Model for all AI calls |
-| `LOG_LEVEL` | `INFO` | `DEBUG` for per-call detail |
-
-### Why `TRUST_PROXY_HEADERS` defaults to off
-
-Rate limiting keys on the client IP. `X-Forwarded-For` is a request header, so
-a client can set it to anything. On a directly-exposed server, honouring it
-would let an attacker send a fresh fake address on every attempt and never hit
-the limit. Turn it on **only** when a proxy you control overwrites that header.
-
----
-
-## Option A — Oracle Cloud Always Free
-
-The most capable free option: a real VM with real disk, free indefinitely.
+Free indefinitely, with real disk. Two firewall layers trip most people up.
 
 ### 1. Create the instance
 
-In the Oracle Cloud console: **Compute → Instances → Create**.
+**Compute → Instances → Create instance**
 
-- Shape: **VM.Standard.A1.Flex** (Ampere ARM), 1–4 OCPU, 6–24 GB RAM
-- Image: Ubuntu 22.04
-- Save the SSH key it offers — you cannot retrieve it later
+- **Shape:** `VM.Standard.A1.Flex` (Ampere ARM) — 1 OCPU / 6 GB is plenty
+- **Image:** Canonical Ubuntu 22.04
+- **SSH keys:** save the private key it offers; you cannot retrieve it later
 
-Then open the ports: **Networking → Virtual Cloud Networks → your VCN →
-Security Lists → Add Ingress Rules** for TCP 80 and 443.
+ARM capacity is often exhausted in popular regions. If creation fails with
+"Out of host capacity", either retry later or use the always-free AMD shape
+(`VM.Standard.E2.1.Micro`, 1 GB RAM — tight but workable).
 
-Oracle images also carry local firewall rules:
+### 2. Open the ports — both layers
+
+**Layer 1, the cloud firewall.** Networking → Virtual Cloud Networks → your
+VCN → Security Lists → Default Security List → **Add Ingress Rules**:
+
+| Source CIDR | Protocol | Destination port |
+| ----------- | -------- | ---------------- |
+| `0.0.0.0/0` | TCP | 80 |
+| `0.0.0.0/0` | TCP | 443 |
+
+**Layer 2, the instance firewall.** Oracle's Ubuntu images also ship
+restrictive local iptables rules. The setup script handles this, but manually:
 
 ```bash
 sudo iptables -I INPUT 1 -p tcp --dport 80 -j ACCEPT
@@ -140,155 +119,127 @@ sudo iptables -I INPUT 1 -p tcp --dport 443 -j ACCEPT
 sudo netfilter-persistent save
 ```
 
-### 2. Install Docker
+Forgetting layer 2 is the usual reason a correctly-configured VM appears
+completely unreachable.
+
+### 3. Point your domain at it
+
+Copy the instance's public IP into DuckDNS and press **update ip**. Confirm:
 
 ```bash
-sudo apt update && sudo apt install -y docker.io docker-compose-v2
-sudo usermod -aG docker $USER && newgrp docker
+dig +short talentpilot.duckdns.org
 ```
 
-### 3. Deploy
+---
+
+## The bootstrap script
+
+SSH in, then:
 
 ```bash
-git clone <your-repo-url> talent-pilot && cd talent-pilot
+sudo apt update && sudo apt install -y git
+git clone https://github.com/AniP-C/talent-pilot.git
+cd talent-pilot
+sudo ./deploy/setup.sh talentpilot.duckdns.org
 ```
 
-Create `.env` next to `docker-compose.yml`:
+Or without a domain:
+
+```bash
+sudo ./deploy/setup.sh --no-domain
+```
+
+The script installs Python and Caddy, creates a `talentpilot` service account,
+installs the app to `/opt/talent-pilot` in a virtualenv, writes
+`/etc/talent-pilot/talent-pilot.env` with a **randomly generated invite code**,
+registers both systemd services, configures Caddy, fixes the iptables rules,
+and health-checks the API.
+
+Re-running it updates the code and restarts the services. It will not
+overwrite an existing env file.
+
+### Then add your Gemini key
+
+```bash
+sudo nano /etc/talent-pilot/talent-pilot.env
+```
+
+Replace `PUT_YOUR_KEY_HERE`, then:
+
+```bash
+sudo systemctl restart talent-pilot-api talent-pilot-dashboard
+```
+
+Your invite code:
+
+```bash
+sudo grep SIGNUP_CODE /etc/talent-pilot/talent-pilot.env
+```
+
+Open `https://talentpilot.duckdns.org`, register with that code, and you are in.
+
+---
+
+## Manual setup
+
+If you would rather not run a script, this is everything it does.
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip git rsync sqlite3
+sudo useradd --system --home /opt/talent-pilot --shell /usr/sbin/nologin talentpilot
+sudo mkdir -p /opt/talent-pilot /var/lib/talent-pilot /var/log/talent-pilot /etc/talent-pilot
+```
+
+```bash
+sudo git clone https://github.com/AniP-C/talent-pilot.git /opt/talent-pilot
+cd /opt/talent-pilot
+sudo python3 -m venv .venv
+sudo .venv/bin/pip install -r requirements.txt
+```
+
+Create `/etc/talent-pilot/talent-pilot.env`:
 
 ```bash
 GEMINI_API_KEY=your_real_key
-PUBLIC_URL=https://jobs.yourdomain.com
-SIGNUP_CODE=pick-something-long-and-random
+PUBLIC_URL=https://talentpilot.duckdns.org
+SIGNUP_CODE=something-long-and-random
 TRUST_PROXY_HEADERS=true
-```
-
-Upload `credentials.json` if you want Gmail sync, then:
-
-```bash
-docker compose up -d --build
-```
-
-### 4. TLS with Caddy
-
-Caddy obtains and renews certificates automatically. Create `Caddyfile`:
-
-```caddyfile
-jobs.yourdomain.com {
-    handle /health* {
-        reverse_proxy localhost:8000
-    }
-    handle /auth/* {
-        reverse_proxy localhost:8000
-    }
-    handle /jobs* {
-        reverse_proxy localhost:8000
-    }
-    handle /profiles* {
-        reverse_proxy localhost:8000
-    }
-    handle /analyze-job* {
-        reverse_proxy localhost:8000
-    }
-    handle /generate-answer* {
-        reverse_proxy localhost:8000
-    }
-    handle /save-answer* {
-        reverse_proxy localhost:8000
-    }
-    handle /check-job* {
-        reverse_proxy localhost:8000
-    }
-    handle /save-job* {
-        reverse_proxy localhost:8000
-    }
-    handle {
-        reverse_proxy localhost:8501
-    }
-}
+DATA_DIR=/var/lib/talent-pilot
+LOG_DIR=/var/log/talent-pilot
 ```
 
 ```bash
-sudo apt install -y caddy && sudo systemctl restart caddy
+sudo chmod 640 /etc/talent-pilot/talent-pilot.env
+sudo chown root:talentpilot /etc/talent-pilot/talent-pilot.env
+sudo chown -R talentpilot:talentpilot /opt/talent-pilot /var/lib/talent-pilot /var/log/talent-pilot
 ```
 
-Everything not matched by an API route falls through to the dashboard, so
-`https://jobs.yourdomain.com` is the UI and the same host serves the API.
+```bash
+sudo cp deploy/talent-pilot-*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now talent-pilot-api talent-pilot-dashboard
+```
 
-> Prefer a cleaner split? Put the API on `api.yourdomain.com` and reverse-proxy
-> the whole host to port 8000, leaving the apex for the dashboard.
+Install Caddy, copy `deploy/Caddyfile` to `/etc/caddy/Caddyfile` replacing
+`YOUR_DOMAIN`, then `sudo systemctl restart caddy`.
+
+### The two commands, if you skip systemd entirely
+
+```bash
+python -m uvicorn api.server:app --host 127.0.0.1 --port 8000 --proxy-headers
+```
+
+```bash
+python -m streamlit run app.py --server.port 8501 --server.address 127.0.0.1 --server.headless true
+```
+
+*These two are the commands verified in hosted configuration.* Everything else
+here is wrapping around them.
 
 ---
 
-## Option B — Hugging Face Spaces
-
-Fastest path to a public URL. **Storage is ephemeral on the free tier** — data
-is lost on restart or rebuild, so treat this as a demo, not your real tracker.
-
-1. Create a Space, type **Docker**, visibility **Private**.
-2. Push this repo to it.
-3. In **Settings → Variables and secrets**, add `GEMINI_API_KEY`, `SIGNUP_CODE`,
-   and `PUBLIC_URL` (`https://<user>-<space>.hf.space`).
-4. Spaces route a single port. Add this so the dashboard is what visitors get:
-
-```dockerfile
-ENV STREAMLIT_SERVER_PORT=7860
-EXPOSE 7860
-```
-
-and change the dashboard command in `docker/supervisord.conf` to
-`--server.port 7860`.
-
-Because only one port is exposed, the extension cannot reach the API on a
-Space unless you front both with a path-routing proxy. Spaces suits the
-dashboard alone.
-
----
-
-## Option C — Any Docker host
-
-```bash
-docker compose up -d --build
-docker compose logs -f
-```
-
-Or without compose:
-
-```bash
-docker build -t talent-pilot .
-```
-
-```bash
-docker run -d --name talent-pilot \
-  -p 8501:8501 -p 8000:8000 \
-  -v talent-pilot-data:/data \
-  -v "$PWD/credentials.json:/app/credentials.json:ro" \
-  -e GEMINI_API_KEY="$GEMINI_API_KEY" \
-  -e PUBLIC_URL="https://jobs.yourdomain.com" \
-  -e SIGNUP_CODE="your-invite-code" \
-  -e TRUST_PROXY_HEADERS=true \
-  --restart unless-stopped \
-  talent-pilot
-```
-
-### Running without Docker
-
-The container is a convenience, not a requirement. Under systemd, run the same
-two commands the container runs:
-
-```bash
-python -m uvicorn api.server:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'
-```
-
-```bash
-python -m streamlit run app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true
-```
-
-Both need the same environment and the same `DATA_DIR`. *These two commands are
-the ones verified in hosted configuration.*
-
----
-
-## Google OAuth for a hosted instance
+## Google OAuth for Gmail sync
 
 The desktop OAuth flow **cannot work on a server** — it opens a browser on the
 machine running the code. Setting `PUBLIC_URL` switches the app to the
@@ -296,82 +247,119 @@ redirect flow automatically.
 
 In the [Google Cloud console](https://console.cloud.google.com/):
 
-1. **APIs & Services → Enable APIs** → enable **Gmail API**.
-2. **OAuth consent screen** → External → add your address under **Test users**.
-   An unverified app is capped at 100 test users, which is ample here.
+1. **APIs & Services → Library** → enable **Gmail API**.
+2. **OAuth consent screen** → External. Add your address under **Test users**.
+   An unverified app allows 100 test users, which is ample.
 3. **Credentials → Create credentials → OAuth client ID → Web application**.
-4. Under **Authorised redirect URIs**, add your `PUBLIC_URL` **exactly**,
-   including the trailing slash:
+4. Under **Authorised redirect URIs** add your `PUBLIC_URL` **exactly**,
+   trailing slash included:
 
    ```text
-   https://jobs.yourdomain.com/
+   https://talentpilot.duckdns.org/
    ```
 
-5. Download the JSON as `credentials.json` and mount it into the container.
+5. Download the JSON, then put it on the server:
 
-Users then click **Connect Gmail** in the sidebar, approve at Google, and land
-back on the dashboard with the mailbox connected. The callback is checked
-against a `state` value held in the session, so one user's redirect cannot
-attach a mailbox to another account.
+   ```bash
+   sudo cp credentials.json /opt/talent-pilot/credentials.json
+   sudo chown talentpilot:talentpilot /opt/talent-pilot/credentials.json
+   sudo chmod 600 /opt/talent-pilot/credentials.json
+   sudo systemctl restart talent-pilot-api talent-pilot-dashboard
+   ```
 
-Scope requested is `gmail.readonly` — the app can read mail and nothing else.
+Users click **Connect Gmail** in the sidebar, approve at Google, and land back
+on the dashboard connected. The callback is checked against a `state` value
+held in the session, so one user's redirect cannot attach a mailbox to another
+account. Scope is `gmail.readonly` — read access, nothing else.
 
 ---
 
 ## Pointing the extension at your server
 
-The extension defaults to `http://localhost:8000`. To use a hosted API:
+The extension defaults to `http://localhost:8000`.
 
 1. Open the extension popup.
 2. Expand **⚙️ Settings**.
-3. Enter your API address (`https://jobs.yourdomain.com`) and **Save**.
-4. Chrome asks permission for that origin — accept it.
-5. Sign in.
+3. Enter `https://talentpilot.duckdns.org` and **Save**.
+4. Chrome asks permission for that origin — accept.
+5. Sign in with your account and invite code.
 
 Changing the address clears the stored token, since a token from one server is
 meaningless to another.
 
 **CORS:** `ALLOWED_ORIGIN_REGEX` accepts `chrome-extension://` origins by
-default, which is what the extension needs and excludes ordinary web pages. You
-do not need to change it. If you ever must, never widen it to `*` — that would
-let any site you visit call your API.
+default — exactly what the extension needs, and it excludes ordinary web
+pages. You do not need to change it. Never widen it to `*`; that would let any
+site you visit call your API.
+
+---
+
+## Operating it
+
+```bash
+sudo systemctl status talent-pilot-api talent-pilot-dashboard
+sudo systemctl restart talent-pilot-api
+sudo journalctl -u talent-pilot-api -f
+```
+
+Application logs also go to files:
+
+| File | Contents |
+| ---- | -------- |
+| `/var/log/talent-pilot/app.log` | Every request with a correlation id, auth events, sync progress |
+| `/var/log/talent-pilot/errors.log` | Warnings and errors only |
+
+Updating to a newer version:
+
+```bash
+cd ~/talent-pilot && git pull
+sudo ./deploy/setup.sh talentpilot.duckdns.org
+```
 
 ---
 
 ## Backups
 
-Everything is in `DATA_DIR`. SQLite needs a consistent copy, so use its own
-backup command rather than `cp` on a live database:
+Everything is under `/var/lib/talent-pilot`. SQLite needs a consistent copy,
+so use its own backup command rather than `cp` on a live database:
 
 ```bash
-docker compose exec talent-pilot sh -c 'cd /data && \
-  for db in users.db workspaces/*/jobs.db; do \
-    sqlite3 "$db" ".backup /tmp/$(echo $db | tr / _)"; done'
+sudo -u talentpilot sqlite3 /var/lib/talent-pilot/users.db \
+    ".backup /tmp/users-$(date +%F).db"
 ```
 
-Simplest reliable approach — stop, archive, start:
+Whole-directory backup, stopping the services for consistency:
 
 ```bash
-docker compose stop
-docker run --rm -v talent-pilot-data:/data -v "$PWD:/backup" alpine \
-  tar czf /backup/talent-pilot-$(date +%F).tar.gz -C /data .
-docker compose start
+sudo systemctl stop talent-pilot-api talent-pilot-dashboard
+sudo tar czf ~/talent-pilot-$(date +%F).tar.gz -C /var/lib/talent-pilot .
+sudo systemctl start talent-pilot-api talent-pilot-dashboard
+```
+
+A nightly cron job:
+
+```bash
+0 3 * * * systemctl stop talent-pilot-api talent-pilot-dashboard && \
+  tar czf /root/backups/tp-$(date +\%F).tar.gz -C /var/lib/talent-pilot . && \
+  systemctl start talent-pilot-api talent-pilot-dashboard && \
+  find /root/backups -name 'tp-*.tar.gz' -mtime +14 -delete
 ```
 
 Restore:
 
 ```bash
-docker compose down
-docker run --rm -v talent-pilot-data:/data -v "$PWD:/backup" alpine \
-  sh -c 'rm -rf /data/* && tar xzf /backup/talent-pilot-2026-08-05.tar.gz -C /data'
-docker compose up -d
+sudo systemctl stop talent-pilot-api talent-pilot-dashboard
+sudo rm -rf /var/lib/talent-pilot/*
+sudo tar xzf ~/talent-pilot-2026-08-05.tar.gz -C /var/lib/talent-pilot
+sudo chown -R talentpilot:talentpilot /var/lib/talent-pilot
+sudo systemctl start talent-pilot-api talent-pilot-dashboard
 ```
 
 ---
 
 ## Security checklist
 
-Already handled in code:
+Handled in code:
 
 - Passwords hashed with PBKDF2-SHA256, 600k iterations, per-user salt
 - Sign-in failures take constant time, so accounts cannot be enumerated
@@ -383,59 +371,90 @@ Already handled in code:
 - Uploads validated by type and size; profile names cannot escape the workspace
 - Extension token confined to the service worker; scraped values never `innerHTML`
 
-Yours to configure:
+Handled by this deployment:
 
-- **TLS.** The app speaks plain HTTP and assumes something terminates TLS.
-- **`SIGNUP_CODE`.** Without it, anyone reaching the URL can register.
-- **Gemini billing caps.** Set them on the Google side.
-- **Backups.** Nothing is backed up automatically.
+- Both app processes bound to localhost; Caddy is the only public listener
+- Services run as an unprivileged account with `ProtectSystem=strict`
+- Secrets in a root-owned env file, mode 640
+- Caddy overwrites `X-Forwarded-For`, which is what makes
+  `TRUST_PROXY_HEADERS=true` safe here
+- HSTS and `nosniff` headers
+
+Yours to do:
+
+- **Set a Gemini billing cap.** An invite code limits who registers; each
+  account still spends your quota.
+- **Keep the invite code private**, and rotate it if it leaks.
+- **Set up the backup cron.** Nothing is backed up automatically.
+- **`sudo apt upgrade` periodically.**
 
 Known gaps:
 
-- **No password reset.** A forgotten password needs direct database access.
+- **No password reset.** A forgotten password needs database access.
 - **No email verification.** Addresses are unconfirmed.
 - **No audit log** beyond the application log.
-- **Rate limiting is per-instance.** Running several replicas against one
-  database still works, since counters live in SQLite — but SQLite itself is
-  the scaling limit long before that matters.
+- SQLite is the scaling limit — fine for a handful of users, not hundreds.
 
 ---
 
 ## Troubleshooting
 
-**Accounts disappear after redeploy.**
-`DATA_DIR` is not on persistent storage. Mount a volume at `/data`.
+**The site is unreachable.**
+Almost always the Oracle firewall's second layer. Check both the VCN security
+list *and* `sudo iptables -L INPUT -n --line-numbers`.
 
-**"Use the Connect Gmail link to authorise this hosted instance."**
-Working as intended — the desktop flow is blocked on servers. Use the sidebar
-link. If it does not appear, `PUBLIC_URL` is unset.
+**Caddy cannot get a certificate.**
+DNS must resolve to the server before Caddy can validate. Check
+`dig +short YOUR_DOMAIN`, then `sudo journalctl -u caddy -n 50`.
+
+**A service will not start.**
+
+```bash
+sudo journalctl -u talent-pilot-api -n 50 --no-pager
+```
+
+A missing `GEMINI_API_KEY` is the usual cause — the app starts but every AI
+call returns a config error.
 
 **Google says `redirect_uri_mismatch`.**
 The registered URI must match `PUBLIC_URL` character for character, trailing
-slash included, and `https` not `http`.
+slash included, `https` not `http`.
+
+**"Use the Connect Gmail link to authorise this hosted instance."**
+Working as intended — the desktop flow is blocked on servers. If the link does
+not appear, `PUBLIC_URL` is unset.
 
 **Extension says the address serves a different application.**
-It is reaching something other than this API — often the dashboard. Check
-Settings, and confirm `curl https://your-url/health` returns
-`"service":"talent-pilot-api"`.
+Confirm `curl https://YOUR_DOMAIN/health` returns
+`"service":"talent-pilot-api"`. If it returns HTML, the Caddy `@api` matcher
+is not routing that path.
 
-**Rate limiting locks out everyone at once.**
-`TRUST_PROXY_HEADERS` is off behind a proxy, so every request appears to come
-from the proxy's IP. Set it to `true`.
+**Everyone is rate limited at once.**
+`TRUST_PROXY_HEADERS` is false, so every request looks like it comes from
+Caddy. Set it true.
 
 **Locked out with no way in.**
 
 ```bash
-docker compose exec talent-pilot python -c \
+cd /opt/talent-pilot && sudo -u talentpilot .venv/bin/python -c \
   "import auth; auth.clear_attempts('email:you@example.com')"
 ```
 
-**Container is unhealthy.**
+**Dashboard loads but the UI never connects.**
+Streamlit needs its websocket proxied. Confirm the `handle` block in
+`/etc/caddy/Caddyfile` is present and Caddy was restarted.
+
+---
+
+## Appendix: Docker
+
+A `Dockerfile`, `docker-compose.yml`, and `docker/supervisord.conf` are in the
+repo if you prefer containers. **They are syntax-validated but were never
+built** — Docker Desktop would not start in the development environment.
 
 ```bash
-docker compose logs --tail=50
-docker compose exec talent-pilot curl -s localhost:8000/health
+docker compose up -d --build
 ```
 
-Supervisor restarts either process if it dies; repeated restarts in the log
-point at a missing environment variable.
+The systemd path above is the one this guide recommends, and its commands are
+the ones actually exercised.

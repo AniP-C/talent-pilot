@@ -1,0 +1,39 @@
+[Unit]
+Description=Talent Pilot dashboard (Streamlit UI)
+Documentation=https://github.com/AniP-C/talent-pilot
+After=network-online.target talent-pilot-api.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=talentpilot
+Group=talentpilot
+WorkingDirectory=/opt/talent-pilot
+
+EnvironmentFile=/etc/talent-pilot/talent-pilot.env
+
+# Bound to localhost: Caddy is the only thing that should reach it directly.
+ExecStart=/opt/talent-pilot/.venv/bin/python -m streamlit run app.py \
+    --server.port 8501 \
+    --server.address 127.0.0.1 \
+    --server.headless true \
+    --browser.gatherUsageStats false
+
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/talent-pilot /var/log/talent-pilot
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=talent-pilot-dashboard
+
+[Install]
+WantedBy=multi-user.target

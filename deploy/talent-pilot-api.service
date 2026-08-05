@@ -1,0 +1,42 @@
+[Unit]
+Description=Talent Pilot API (serves the Chrome extension)
+Documentation=https://github.com/AniP-C/talent-pilot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=talentpilot
+Group=talentpilot
+WorkingDirectory=/opt/talent-pilot
+
+# Secrets live here, root-owned and readable only by this service.
+EnvironmentFile=/etc/talent-pilot/talent-pilot.env
+
+# --proxy-headers lets Caddy pass the real client IP through, which is what
+# the per-IP rate limiting keys on. Only meaningful with TRUST_PROXY_HEADERS=true.
+ExecStart=/opt/talent-pilot/.venv/bin/python -m uvicorn api.server:app \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --proxy-headers \
+    --forwarded-allow-ips='127.0.0.1'
+
+Restart=always
+RestartSec=5
+
+# Sandboxing: the service needs to write only its data and log directories.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/talent-pilot /var/log/talent-pilot
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=talent-pilot-api
+
+[Install]
+WantedBy=multi-user.target

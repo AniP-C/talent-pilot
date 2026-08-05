@@ -1,0 +1,68 @@
+# Talent Pilot reverse proxy.
+#
+# Replace YOUR_DOMAIN below, then copy to /etc/caddy/Caddyfile.
+# Caddy obtains and renews the TLS certificate automatically.
+#
+# One hostname serves both processes: API paths go to uvicorn on 8000,
+# everything else falls through to Streamlit on 8501.
+
+YOUR_DOMAIN {
+	encode gzip
+
+	# ---- API routes (FastAPI on 8000) --------------------------------
+	# Listed explicitly so a future dashboard page can never shadow one.
+	@api path /health* /auth/* /jobs* /profiles* /check-job* /save-job* /analyze-job* /generate-answer* /save-answer* /docs* /openapi.json
+	handle @api {
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	# ---- Dashboard (Streamlit on 8501) -------------------------------
+	handle {
+		# Streamlit needs its websocket upgraded for the UI to work at all.
+		reverse_proxy 127.0.0.1:8501 {
+			header_up Host {host}
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	# Caddy sets X-Forwarded-For itself, overwriting anything the client
+	# sent. That is what makes TRUST_PROXY_HEADERS=true safe here.
+
+	header {
+		Strict-Transport-Security "max-age=31536000;"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/talent-pilot.log {
+			roll_size 10MiB
+			roll_keep 3
+		}
+	}
+}
+
+# ---------------------------------------------------------------------
+# No domain yet? Comment out the block above and uncomment this one.
+# Serves plain HTTP on the server's IP.
+#
+# Gmail sync will NOT work in this mode — Google requires an HTTPS
+# redirect URI and will not accept a bare IP address.
+# ---------------------------------------------------------------------
+# :80 {
+# 	encode gzip
+#
+# 	@api path /health* /auth/* /jobs* /profiles* /check-job* /save-job* /analyze-job* /generate-answer* /save-answer* /docs* /openapi.json
+# 	handle @api {
+# 		reverse_proxy 127.0.0.1:8000
+# 	}
+#
+# 	handle {
+# 		reverse_proxy 127.0.0.1:8501 {
+# 			header_up Host {host}
+# 			header_up X-Real-IP {remote_host}
+# 		}
+# 	}
+# }
