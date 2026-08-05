@@ -88,17 +88,60 @@ says `YOUR_DOMAIN`.
 
 Free indefinitely, with real disk. Two firewall layers trip most people up.
 
+### 0. Pick your home region carefully
+
+The region chosen at signup is **permanent** — it cannot be changed later, and
+Always Free resources exist only there. Pick one geographically near you.
+Smaller regions often have better ARM availability than the busy ones.
+
 ### 1. Create the instance
 
 **Compute → Instances → Create instance**
 
-- **Shape:** `VM.Standard.A1.Flex` (Ampere ARM) — 1 OCPU / 6 GB is plenty
-- **Image:** Canonical Ubuntu 22.04
-- **SSH keys:** save the private key it offers; you cannot retrieve it later
+| Setting | Value |
+| ------- | ----- |
+| Image | Canonical Ubuntu 22.04 |
+| Shape | `VM.Standard.A1.Flex` (Ampere ARM) |
+| OCPUs / memory | 1 OCPU, 6 GB is ample. The free allowance is 4 OCPU / 24 GB total |
+| Boot volume | 50 GB default is fine (200 GB free across all volumes) |
+| SSH keys | **Save the private key.** It is offered once and cannot be retrieved |
 
-ARM capacity is often exhausted in popular regions. If creation fails with
-"Out of host capacity", either retry later or use the always-free AMD shape
-(`VM.Standard.E2.1.Micro`, 1 GB RAM — tight but workable).
+Under **Networking**, leave "Assign a public IPv4 address" enabled — without
+it the instance has no route in.
+
+#### If you hit "Out of host capacity"
+
+Common on the free ARM shape, and not a mistake on your part. In order of
+effort:
+
+1. **Try each availability domain** in the region — capacity differs per AD.
+2. **Retry at off-peak hours.** Capacity frees up unpredictably.
+3. **Use the AMD free shape** instead: `VM.Standard.E2.1.Micro`. Only 1 GB
+   RAM, so add swap before installing:
+
+   ```bash
+   sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+   sudo mkswap /swapfile && sudo swapon /swapfile
+   echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+   ```
+
+   Streamlit and uvicorn together fit, but the Gemini calls are the only heavy
+   work and they happen off-box, so 1 GB is workable.
+
+4. **Upgrade to Pay As You Go.** Counter-intuitively this often unblocks ARM
+   capacity, and Always Free resources remain free. It requires a card, and
+   you can exceed the free tier if you provision more, so only do this if you
+   are comfortable watching the billing page.
+
+### 1b. First login
+
+```bash
+chmod 600 ~/Downloads/ssh-key-*.key
+ssh -i ~/Downloads/ssh-key-*.key ubuntu@YOUR_SERVER_IP
+```
+
+The username is `ubuntu` for Canonical images (`opc` for Oracle Linux). If the
+connection hangs rather than refusing, that is the firewall — see below.
 
 ### 2. Open the ports — both layers
 
@@ -124,11 +167,36 @@ completely unreachable.
 
 ### 3. Point your domain at it
 
-Copy the instance's public IP into DuckDNS and press **update ip**. Confirm:
+**With your own domain**, add these at your registrar's DNS panel:
+
+| Type | Name | Value | TTL |
+| ---- | ---- | ----- | --- |
+| A | `@` | your instance's public IP | 300 |
+| A | `www` | your instance's public IP | 300 |
+
+A low TTL while setting up means mistakes correct quickly; raise it later.
+
+**With DuckDNS**, paste the IP into the box and press **update ip**.
+
+Then confirm it resolves *before* running the setup script — Caddy asks
+Let's Encrypt for a certificate immediately, and repeated failures against
+their rate limits will lock you out for hours:
 
 ```bash
-dig +short talentpilot.duckdns.org
+dig +short katchjobs.online
 ```
+
+```bash
+nslookup -type=NS katchjobs.online 8.8.8.8
+```
+
+The first must print your server's IP. If either returns nothing, DNS has not
+propagated yet — wait and re-check rather than running the script.
+
+> A newly registered domain can take anywhere from a few minutes to a couple
+> of hours before the registry publishes its delegation. `NXDOMAIN` on the NS
+> query means the registry has no record yet, which is earlier in the process
+> than a missing A record.
 
 ---
 
