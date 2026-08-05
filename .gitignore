@@ -12,7 +12,7 @@ client_secret*.json
 *.sqlite3
 tracked_applications.csv
 
-# Private resume/profile data and generated memories
+# Accounts, per-user workspaces, resumes, and generated answer memory
 data/*
 !data/.gitkeep
 !data/README.md
@@ -53,3 +53,4 @@ Thumbs.db
 # Local scratch/test files
 random_test_modelu.py
 testing_jd.txt
+.claude/launch.json

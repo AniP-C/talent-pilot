@@ -1,20 +1,31 @@
 {
   "manifest_version": 3,
   "name": "AI Job Copilot",
-  "version": "1.0",
-  "description": "Passive AI assistant for job applications",
+  "version": "2.0.0",
+  "description": "Save job postings, score them against your resume, and draft application answers.",
   "permissions": ["activeTab", "storage", "scripting"],
-  "host_permissions": [
-    "<all_urls>",
-    "http://localhost:8000/*"
-  ],
+  "host_permissions": ["http://localhost:8000/*"],
+  "optional_host_permissions": ["https://*/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_title": "AI Job Copilot"
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["rules.js", "content.js"]
+      "matches": [
+        "https://*.linkedin.com/*",
+        "https://*.greenhouse.io/*",
+        "https://jobs.lever.co/*",
+        "https://*.wellfound.com/*",
+        "https://*.angel.co/*",
+        "https://*.ashbyhq.com/*",
+        "https://*.workable.com/*"
+      ],
+      "js": ["rules.js", "content.js"],
+      "run_at": "document_idle"
     }
   ]
 }

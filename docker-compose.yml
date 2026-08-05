@@ -1,0 +1,46 @@
+services:
+  talent-pilot:
+    build: .
+    image: talent-pilot:latest
+    restart: unless-stopped
+
+    ports:
+      - "8501:8501"   # dashboard
+      - "8000:8000"   # API, used by the browser extension
+
+    environment:
+      # --- Required ---
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?set GEMINI_API_KEY in .env}
+
+      # --- Hosting ---
+      # Set once you have a real URL. Leaving it empty keeps the desktop Gmail
+      # flow, which cannot work inside a container.
+      PUBLIC_URL: ${PUBLIC_URL:-}
+
+      # --- Registration control ---
+      # Strongly recommended before exposing this to the internet.
+      SIGNUP_CODE: ${SIGNUP_CODE:-}
+      REGISTRATION_CLOSED: ${REGISTRATION_CLOSED:-false}
+
+      # Only turn this on when a reverse proxy you control sits in front.
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
+
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATA_DIR: /data
+
+    volumes:
+      # Accounts, workspaces, resumes, answers. Without this, every restart
+      # wipes the database.
+      - talent-pilot-data:/data
+      # Google OAuth client secret, mounted read-only rather than baked in.
+      - ./credentials.json:/app/credentials.json:ro
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/health',timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  talent-pilot-data:

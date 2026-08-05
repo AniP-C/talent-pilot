@@ -1,11 +1,21 @@
-fastapi
-uvicorn[standard]
-streamlit
-pandas
-pydantic
-python-dotenv
-google-genai
-google-auth
-google-auth-oauthlib
-google-api-python-client
-pypdf
+# Web UI
+streamlit>=1.40,<2.0
+pandas>=2.2,<3.0
+
+# API
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.32,<1.0
+pydantic[email]>=2.9,<3.0
+python-multipart>=0.0.12,<1.0
+
+# AI
+google-genai>=1.0,<2.0
+
+# Gmail integration
+google-auth>=2.35,<3.0
+google-auth-oauthlib>=1.2,<2.0
+google-api-python-client>=2.150,<3.0
+
+# Utilities
+python-dotenv>=1.0,<2.0
+pypdf>=5.1,<6.0

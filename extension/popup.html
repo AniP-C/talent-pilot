@@ -1,61 +1,230 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <style>
-        body { 
-            width: 320px; 
-            font-family: Arial, sans-serif; 
-            padding: 15px; 
+        :root {
+            --accent: #0073b1;
+            --accent-dark: #005682;
+            --success: #1e7e34;
+            --danger: #c9302c;
+            --border: #dfe3e8;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            width: 330px;
             margin: 0;
-            background-color: #f9f9f9;
+            padding: 14px;
+            background: #f6f7f9;
+            font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+            font-size: 13px;
+            color: #1f2328;
         }
+
         .header {
-            display: flex; 
-            justify-content: space-between; 
-            align-items: center; 
-            border-bottom: 2px solid #0073b1; 
-            padding-bottom: 5px; 
-            margin-bottom: 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid var(--accent);
+            padding-bottom: 8px;
+            margin-bottom: 12px;
         }
-        h3 { margin: 0; color: #333; }
-        #open-dashboard { 
-            color: #0073b1; font-size: 12px; cursor: pointer; text-decoration: underline; font-weight: bold; 
+
+        .header h3 { margin: 0; font-size: 15px; }
+
+        .link {
+            color: var(--accent);
+            font-size: 12px;
+            cursor: pointer;
+            font-weight: 600;
         }
-        #job-info {
-            background: white; padding: 10px; border-radius: 6px; border: 1px solid #ddd; margin-bottom: 10px; font-size: 14px;
+        .link:hover { text-decoration: underline; }
+
+        .card {
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 10px;
         }
-        /* NEW: Dropdown Styling */
-        .profile-select {
-            width: 100%; padding: 8px; margin-bottom: 10px; border-radius: 5px; border: 1px solid #ccc; font-size: 13px; background-color: white; font-weight: bold; color: #333; cursor: pointer;
+
+        .muted { color: #6b7280; font-size: 12px; }
+
+        label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+
+        input, select {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 8px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 13px;
+            font-family: inherit;
+            background: #fff;
         }
-        .btn { 
-            width: 100%; padding: 10px; margin-top: 5px; cursor: pointer; border: none; border-radius: 5px; font-weight: bold; transition: 0.2s;
+
+        input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+        .btn {
+            width: 100%;
+            padding: 9px;
+            margin-top: 4px;
+            border: none;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 13px;
+            cursor: pointer;
         }
-        .btn-primary { background: #0073b1; color: white; }
-        .btn-primary:hover { background: #005682; }
-        .btn-success { background: #28a745; color: white; }
-        .btn-success:hover { background: #1e7e34; }
-        #status-area { margin-top: 15px; font-size: 13px; color: #333; line-height: 1.4; }
-        .warning { color: #d9534f; font-weight: bold; }
-        .success-text { color: #28a745; font-weight: bold; }
+        .btn:disabled { opacity: 0.6; cursor: default; }
+        .btn-primary { background: var(--accent); color: #fff; }
+        .btn-primary:hover:not(:disabled) { background: var(--accent-dark); }
+        .btn-success { background: #28a745; color: #fff; }
+        .btn-success:hover:not(:disabled) { background: var(--success); }
+        .btn-ghost { background: transparent; color: #6b7280; font-weight: 500; }
+        .btn-ghost:hover { text-decoration: underline; }
+
+        .tabs { display: flex; gap: 4px; margin-bottom: 10px; }
+        .tab {
+            flex: 1;
+            padding: 7px;
+            text-align: center;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 12px;
+            background: #eceff3;
+            color: #6b7280;
+        }
+        .tab.active { background: var(--accent); color: #fff; }
+
+        .account {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 12px;
+            margin-bottom: 10px;
+        }
+        .account .email { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+
+        #upload-panel, #settings-panel {
+            margin-top: 14px;
+            border-top: 1px solid var(--border);
+            padding-top: 10px;
+        }
+        #settings-panel summary,
+        #upload-panel summary {
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--accent);
+            list-style: none;
+            padding: 4px 0;
+        }
+        #upload-panel summary::-webkit-details-marker,
+        #settings-panel summary::-webkit-details-marker { display: none; }
+        #upload-panel summary:hover,
+        #settings-panel summary:hover { text-decoration: underline; }
+        #upload-panel form, #settings-panel form { margin-top: 8px; }
+        #upload-panel input[type="file"] { padding: 6px; font-size: 12px; }
+        #upload-status, #settings-status {
+            margin-top: 8px;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+
+        #status-area { margin-top: 10px; font-size: 12.5px; line-height: 1.5; }
+        .warning { color: var(--danger); font-weight: 600; }
+        .success-text { color: var(--success); font-weight: 600; }
+        .score { font-size: 15px; font-weight: 700; }
+        .hidden { display: none !important; }
     </style>
 </head>
+
 <body>
     <div class="header">
         <h3>🤖 Job Copilot</h3>
-        <span id="open-dashboard">Dashboard ↗</span>
+        <span id="open-dashboard" class="link">Dashboard ↗</span>
     </div>
-    
-    <div id="job-info">Scanning page...</div>
-    
-    <select id="profile-dropdown" class="profile-select" style="display:none;"></select>
-    
-    <button id="btn-analyze" class="btn btn-primary" style="display:none;">🧠 Analyze Match</button>
-    <button id="btn-save" class="btn btn-success" style="display:none;">💾 Save Job to DB</button>
-    
-    <div id="status-area"></div>
+
+    <!-- Signed-out view -->
+    <section id="auth-view" class="hidden">
+        <div class="tabs">
+            <div class="tab active" id="tab-signin" data-mode="signin">Sign in</div>
+            <div class="tab" id="tab-register" data-mode="register">Register</div>
+        </div>
+
+        <form id="auth-form" class="card">
+            <label for="auth-email">Email</label>
+            <input type="email" id="auth-email" autocomplete="username" required>
+
+            <label for="auth-password">Password</label>
+            <input type="password" id="auth-password" autocomplete="current-password" required>
+
+            <div id="invite-row" class="hidden">
+                <label for="auth-invite">Invite code</label>
+                <input type="text" id="auth-invite" autocomplete="off">
+            </div>
+
+            <button type="submit" class="btn btn-primary" id="auth-submit">Sign in</button>
+        </form>
+
+        <div id="auth-error" class="warning"></div>
+        <p class="muted">Uses the same account as the Talent-Pilot dashboard.</p>
+    </section>
+
+    <!-- Signed-in view -->
+    <section id="main-view" class="hidden">
+        <div class="account">
+            <span class="email" id="account-email"></span>
+            <span class="link" id="sign-out">Sign out</span>
+        </div>
+
+        <div class="card" id="job-info">Scanning page…</div>
+
+        <select id="profile-dropdown" class="hidden" aria-label="Resume profile"></select>
+
+        <button id="btn-analyze" class="btn btn-primary hidden">🧠 Analyze match</button>
+        <button id="btn-save" class="btn btn-success hidden">💾 Save to tracker</button>
+        <button id="btn-enable-site" class="btn btn-ghost hidden">Enable Copilot on this site</button>
+
+        <div id="status-area"></div>
+
+        <!-- Resume onboarding, collapsed so it never crowds the main actions -->
+        <details id="upload-panel">
+            <summary>📄 Upload a resume</summary>
+            <form id="upload-form">
+                <label for="upload-name">Profile name</label>
+                <input type="text" id="upload-name" placeholder="e.g. AI Engineer" required>
+
+                <label for="upload-file">PDF resume</label>
+                <input type="file" id="upload-file" accept="application/pdf,.pdf" required>
+
+                <button type="submit" class="btn btn-primary" id="upload-submit">
+                    Convert and save
+                </button>
+            </form>
+            <div id="upload-status"></div>
+        </details>
+    </section>
+
+    <!-- Server address, needed when the API is hosted rather than local -->
+    <details id="settings-panel">
+        <summary>⚙️ Settings</summary>
+        <form id="settings-form">
+            <label for="settings-api-url">API address</label>
+            <input type="url" id="settings-api-url" placeholder="http://localhost:8000" required>
+            <p class="muted" style="margin: 0 0 8px;">
+                Point this at your hosted server to use the extension from anywhere.
+            </p>
+            <button type="submit" class="btn btn-primary" id="settings-submit">Save</button>
+        </form>
+        <div id="settings-status"></div>
+    </details>
 
     <script src="popup.js"></script>
 </body>
+
 </html>

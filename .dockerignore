@@ -1,0 +1,47 @@
+# Secrets — supplied at runtime as env vars or mounts, never baked into a layer
+.env
+.env.*
+!.env.example
+credentials.json
+token.json
+client_secret*.json
+
+# Local state that must not leak into the image
+data/
+logs/
+*.db
+*.sqlite
+*.sqlite3
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Not needed at runtime
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+.claude/
+tests/
+extension/
+*.md
+!README.md
+Dockerfile
+docker-compose.yml
+.dockerignore

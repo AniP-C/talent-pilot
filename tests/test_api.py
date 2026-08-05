@@ -1,0 +1,222 @@
+"""API contract: authentication is required and identity comes from the token."""
+
+import pytest
+from fastapi.testclient import TestClient
+
+import auth
+from api.server import app
+
+client = TestClient(app)
+
+PROTECTED_ENDPOINTS = [
+    ("get", "/profiles", None),
+    ("get", "/jobs", None),
+    ("post", "/check-job", {"company": "Acme", "role": "Engineer"}),
+    ("post", "/save-job", {"company": "Acme", "role": "Engineer"}),
+    ("post", "/analyze-job", {"company": "Acme", "role": "Engineer"}),
+    ("post", "/generate-answer", {"question": "Why us?"}),
+    ("post", "/save-answer", {"question": "Why us?", "answer": "Because."}),
+    ("get", "/auth/me", None),
+]
+
+
+@pytest.fixture
+def account():
+    """Register a throwaway account and return its bearer headers."""
+    import uuid
+
+    email = f"{uuid.uuid4().hex}@example.com"
+    response = client.post(
+        "/auth/register", json={"email": email, "password": "password123"}
+    )
+    assert response.status_code == 201
+
+    payload = response.json()
+    return {
+        "email": email,
+        "user_id": payload["user_id"],
+        "headers": {"Authorization": f"Bearer {payload['token']}"},
+    }
+
+
+def test_health_needs_no_auth():
+    assert client.get("/health").status_code == 200
+
+
+def test_health_identifies_the_service():
+    """The extension checks this marker to detect a wrong server on the port."""
+    from api.server import SERVICE_NAME
+
+    body = client.get("/health").json()
+
+    assert body["service"] == SERVICE_NAME
+    assert body["status"] == "ok"
+
+
+def test_responses_carry_a_request_id():
+    """Correlates a client-side failure with a line in logs/app.log."""
+    assert client.get("/health").headers.get("X-Request-ID")
+
+
+def test_cors_allows_the_methods_the_api_actually_uses():
+    """PATCH was missing from allow_methods, which broke status updates."""
+    response = client.options(
+        "/jobs/1/status",
+        headers={
+            "Origin": "chrome-extension://" + "a" * 32,
+            "Access-Control-Request-Method": "PATCH",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "PATCH" in response.headers["access-control-allow-methods"]
+
+
+def test_cors_rejects_ordinary_web_pages():
+    response = client.options(
+        "/auth/login",
+        headers={
+            "Origin": "https://evil-site.example",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    assert response.headers.get("access-control-allow-origin") is None
+
+
+@pytest.mark.parametrize("method,path,body", PROTECTED_ENDPOINTS)
+def test_endpoints_reject_anonymous_requests(method, path, body):
+    kwargs = {"json": body} if body is not None else {}
+    response = getattr(client, method)(path, **kwargs)
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize("method,path,body", PROTECTED_ENDPOINTS)
+def test_endpoints_reject_a_bogus_token(method, path, body):
+    kwargs = {"json": body} if body is not None else {}
+    response = getattr(client, method)(
+        path, headers={"Authorization": "Bearer made-up-token"}, **kwargs
+    )
+    assert response.status_code == 401
+
+
+def test_register_then_use_token(account):
+    response = client.get("/auth/me", headers=account["headers"])
+
+    assert response.status_code == 200
+    assert response.json()["email"] == account["email"]
+
+
+def test_register_rejects_duplicate_email(account):
+    response = client.post(
+        "/auth/register", json={"email": account["email"], "password": "password123"}
+    )
+    assert response.status_code == 400
+
+
+def test_register_rejects_weak_password():
+    response = client.post(
+        "/auth/register", json={"email": "weak@example.com", "password": "abc"}
+    )
+    assert response.status_code == 400
+
+
+def test_login_with_wrong_password_is_401(account):
+    response = client.post(
+        "/auth/login", json={"email": account["email"], "password": "wrong-password"}
+    )
+    assert response.status_code == 401
+
+
+def test_logout_invalidates_the_token(account):
+    assert client.post("/auth/logout", headers=account["headers"]).status_code == 204
+    assert client.get("/auth/me", headers=account["headers"]).status_code == 401
+
+
+# =====================================================================
+# ISOLATION
+# =====================================================================
+def test_one_account_cannot_see_another_accounts_jobs(account):
+    import uuid
+
+    client.post("/save-job", headers=account["headers"], json={
+        "company": "Acme", "role": "Engineer", "jd_text": "", "link": ""
+    })
+
+    other = client.post(
+        "/auth/register",
+        json={"email": f"{uuid.uuid4().hex}@example.com", "password": "password123"},
+    ).json()
+    other_headers = {"Authorization": f"Bearer {other['token']}"}
+
+    # The second account sees an empty tracker, and the identity used is the
+    # token's — there is no request field that could name someone else.
+    assert client.get("/jobs", headers=other_headers).json()["jobs"] == []
+    assert client.post(
+        "/check-job", headers=other_headers, json={"company": "Acme", "role": "Engineer"}
+    ).json()["exists"] is False
+
+
+def test_save_job_then_check_job(account):
+    payload = {"company": "Globex", "role": "SRE", "jd_text": "k8s", "link": ""}
+
+    assert client.post("/save-job", headers=account["headers"], json=payload).status_code == 201
+
+    check = client.post(
+        "/check-job", headers=account["headers"], json={"company": "globex", "role": "sre"}
+    ).json()
+
+    assert check["exists"] is True
+    assert check["status"] == "APPLIED"
+
+
+def test_duplicate_save_returns_409(account):
+    payload = {"company": "Initech", "role": "Dev", "jd_text": "", "link": ""}
+
+    client.post("/save-job", headers=account["headers"], json=payload)
+    response = client.post("/save-job", headers=account["headers"], json=payload)
+
+    assert response.status_code == 409
+
+
+@pytest.mark.parametrize(
+    "profile", ["../../../etc/passwd", "..\\..\\users.db", "/etc/shadow"]
+)
+def test_traversal_in_profile_field_is_rejected(account, profile):
+    response = client.post(
+        "/save-job",
+        headers=account["headers"],
+        json={"company": "Acme", "role": "Engineer", "jd_text": "", "link": "", "profile": profile},
+    )
+
+    # Either rejected outright, or neutralised to a safe name — never a read
+    # outside the workspace.
+    assert response.status_code in (201, 400)
+
+    if response.status_code == 201:
+        jobs = client.get("/jobs", headers=account["headers"]).json()["jobs"]
+        assert ".." not in (jobs[0]["resume_used"] or "")
+
+
+def test_save_job_validates_required_fields(account):
+    response = client.post(
+        "/save-job", headers=account["headers"], json={"company": "", "role": ""}
+    )
+    assert response.status_code == 422  # pydantic rejects it before the handler
+
+
+def test_status_update_rejects_invalid_status(account):
+    created = client.post(
+        "/save-job",
+        headers=account["headers"],
+        json={"company": "Umbrella", "role": "Analyst", "jd_text": "", "link": ""},
+    ).json()
+
+    response = client.patch(
+        f"/jobs/{created['job_id']}/status",
+        headers=account["headers"],
+        json={"status": "Interviewing"},
+    )
+
+    assert response.status_code == 400
