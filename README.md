@@ -494,9 +494,10 @@ Example `/analyze-job` body:
 
 ## ☁️ Deploying
 
-See **[DEPLOYMENT.md](DEPLOYMENT.md)** for the full guide: Oracle Cloud Always
-Free, systemd services, Caddy for automatic HTTPS, the hosted Gmail OAuth
-setup, backups, and troubleshooting. No Docker needed.
+See **[DEPLOYMENT.md](DEPLOYMENT.md)** for the full guide: Google Compute
+Engine or Oracle Cloud on their always-free tiers, systemd services, Caddy for
+automatic HTTPS, the hosted Gmail OAuth setup, backups, and troubleshooting.
+No Docker needed.
 
 On a fresh Ubuntu server:
 

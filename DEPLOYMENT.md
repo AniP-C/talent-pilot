@@ -16,6 +16,7 @@ Running Talent Pilot on a server you control — no Docker required.
 
 - [What you are deploying](#what-you-are-deploying)
 - [Get a free domain first](#get-a-free-domain-first)
+- [Google Compute Engine Always Free](#google-compute-engine-always-free)
 - [Oracle Cloud Always Free](#oracle-cloud-always-free)
 - [The bootstrap script](#the-bootstrap-script)
 - [Manual setup](#manual-setup)
@@ -84,9 +85,127 @@ says `YOUR_DOMAIN`.
 
 ---
 
+## Google Compute Engine Always Free
+
+Free indefinitely — not a 12-month trial — with a real persistent disk. A
+friendlier console than Oracle's, one firewall layer instead of two, and no
+capacity errors in practice. **This is the recommended host.**
+
+### What "always free" covers
+
+| Resource | Free allowance |
+| -------- | -------------- |
+| Instance | One `e2-micro` per month |
+| Regions | `us-west1`, `us-central1`, `us-east1` **only** |
+| Disk | 30 GB standard persistent disk |
+| Egress | 1 GB/month to most destinations |
+
+Two caveats before you start:
+
+- **A card is required** to create the billing account, even for free-tier
+  use. It will not be charged while you stay on the free shape in a free
+  region. Set a budget alert (below) as a tripwire.
+- **The free regions are all in the US.** From India expect roughly 250 ms
+  latency — noticeable on page loads, fine for a personal tracker.
+
+### 1. Create the project and budget alert
+
+1. [console.cloud.google.com](https://console.cloud.google.com) → create a
+   project, e.g. `talent-pilot`.
+2. **Billing → Budgets & alerts → Create budget.** Set the amount to **$1**
+   with alerts at 50% and 100%. This does not cap spending — it emails you.
+   It is your early warning that something has left the free tier.
+
+### 2. Create the instance
+
+**Compute Engine → VM instances → Create instance**
+
+| Setting | Value |
+| ------- | ----- |
+| Name | `talent-pilot` |
+| Region | `us-central1` (or `us-west1` / `us-east1`) |
+| Machine type | **`e2-micro`** — under "Shared-core". Nothing else is free |
+| Boot disk | Ubuntu 22.04 LTS, **30 GB**, Standard persistent disk |
+| Firewall | ✅ **Allow HTTP traffic**  ✅ **Allow HTTPS traffic** |
+
+Those two checkboxes create the VPC firewall rules for you. That is the whole
+firewall story on GCP — unlike Oracle, the image has no second iptables layer
+to fight.
+
+> Confirm the panel says the machine type is free-tier eligible. Picking
+> `e2-small` instead of `e2-micro` is the easy way to start paying by accident.
+
+### 3. Set up access from your machine
+
+Install the [gcloud CLI](https://cloud.google.com/sdk/docs/install), then:
+
+```bash
+gcloud auth login
+gcloud config set project YOUR_PROJECT_ID
+gcloud compute config-ssh
+```
+
+`gcloud compute ssh` generates and registers an SSH key for you, so there is
+no key file to download or lose:
+
+```bash
+gcloud compute ssh talent-pilot --zone us-central1-a
+```
+
+To run a single command without an interactive session:
+
+```bash
+gcloud compute ssh talent-pilot --zone us-central1-a --command "uptime"
+```
+
+### 4. Reserve a static IP
+
+By default the external IP changes when the instance restarts, which would
+silently break your DNS record.
+
+**VPC network → IP addresses** → find the instance's external address →
+**Reserve**. Or:
+
+```bash
+gcloud compute addresses create talent-pilot-ip --region us-central1
+```
+
+### 5. Point DNS at it, then deploy
+
+Add the A records (see [below](#3-point-your-domain-at-it)), wait for them to
+resolve, then:
+
+```bash
+gcloud compute ssh talent-pilot --zone us-central1-a
+```
+
+```bash
+sudo apt update && sudo apt install -y git
+git clone https://github.com/AniP-C/talent-pilot.git && cd talent-pilot
+sudo ./deploy/setup.sh katchjobs.online
+```
+
+The script detects the 1 GB of RAM on `e2-micro` and adds 2 GB of swap before
+installing — without it, building the pandas and streamlit wheels gets
+OOM-killed partway through.
+
+### Watching for accidental charges
+
+```bash
+gcloud compute instances list
+```
+
+One `e2-micro` in a free region, one 30 GB standard disk, one static IP **that
+stays attached to a running instance**. A reserved IP not attached to a running
+instance is billed, so if you stop the VM for a while, release the address.
+
+---
+
 ## Oracle Cloud Always Free
 
-Free indefinitely, with real disk. Two firewall layers trip most people up.
+Also free indefinitely, with a larger machine (up to 4 ARM cores and 24 GB
+RAM). The trade-offs are frequent capacity errors on the ARM shape and two
+firewall layers instead of one.
 
 ### 0. Pick your home region carefully
 

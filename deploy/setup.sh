@@ -42,6 +42,29 @@ apt-get install -y -qq python3 python3-venv python3-pip curl rsync gnupg \
     debian-keyring debian-archive-keyring apt-transport-https sqlite3
 
 # ---------------------------------------------------------------------
+info "Checking available memory"
+# ---------------------------------------------------------------------
+# The free tiers on GCP (e2-micro) and Oracle (E2.1.Micro) give 1 GB, which
+# is not enough to build pandas and streamlit wheels — pip gets OOM-killed
+# partway through. Swap has to exist before the install, not after.
+TOTAL_MB=$(free -m | awk '/^Mem:/{print $2}')
+info "Detected ${TOTAL_MB} MB RAM"
+
+if (( TOTAL_MB < 1800 )); then
+    if swapon --show 2>/dev/null | grep -q .; then
+        info "Swap already active, leaving it alone"
+    else
+        warn "Low memory — adding 2 GB swap so the install does not get OOM-killed"
+        fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+        chmod 600 /swapfile
+        mkswap /swapfile >/dev/null
+        swapon /swapfile
+        grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+        info "Swap enabled"
+    fi
+fi
+
+# ---------------------------------------------------------------------
 info "Creating service account and directories"
 # ---------------------------------------------------------------------
 id -u "$APP_USER" &>/dev/null || useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin "$APP_USER"
@@ -156,11 +179,14 @@ caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile \
 systemctl restart caddy
 
 # ---------------------------------------------------------------------
-info "Opening the firewall"
+info "Opening the local firewall"
 # ---------------------------------------------------------------------
-# Oracle Cloud images ship restrictive local rules on top of the cloud-level
-# security list, and forgetting these is the usual reason a new VM appears
-# unreachable even after opening the ports in the console.
+# Oracle Cloud images ship restrictive local iptables rules on top of the
+# cloud-level security list, and forgetting these is the usual reason a new
+# Oracle VM appears unreachable even after opening the ports in the console.
+#
+# GCP images do not do this — the VPC firewall is the only layer there — so
+# these rules are a harmless no-op on Google Compute Engine.
 if command -v iptables &>/dev/null; then
     iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null \
         || iptables -I INPUT 1 -p tcp --dport 80 -j ACCEPT
