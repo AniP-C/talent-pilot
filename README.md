@@ -6,6 +6,13 @@ Talent Pilot is a local-first job search automation system that helps you track 
 
 ---
 
+> 📖 **New here?** [PROJECT.md](PROJECT.md) explains what this is, how it is
+> put together, and the decisions behind it. For internals see
+> [TECHNICAL_OVERVIEW.md](TECHNICAL_OVERVIEW.md); for hosting see
+> [DEPLOYMENT.md](DEPLOYMENT.md).
+
+---
+
 ## 🎬 Demo Video
 
 [![Talent Pilot Demo](https://img.youtube.com/vi/dZEQe_gm0mY/maxresdefault.jpg)](https://youtu.be/dZEQe_gm0mY)
