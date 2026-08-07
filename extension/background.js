@@ -167,6 +167,9 @@ const handlers = {
         return { ok: true, data: { apiUrl: await getApiUrl(), defaultApiUrl: DEFAULT_API_URL } };
     },
 
+    // Stores the address only. Host permission is requested by the popup,
+    // because chrome.permissions.request() needs a user gesture and cannot
+    // be called from a service worker at all.
     async SET_API_URL({ apiUrl }) {
         let parsed;
         try {
@@ -180,18 +183,14 @@ const handlers = {
         }
 
         const origin = `${parsed.origin}/*`;
-        const alreadyGranted = await chrome.permissions.contains({ origins: [origin] });
-
-        // A remote API is outside the manifest's host permissions, so access
-        // has to be granted explicitly before any request can reach it.
-        if (!alreadyGranted) {
-            const granted = await chrome.permissions.request({ origins: [origin] });
-            if (!granted) {
-                return { ok: false, error: `Permission to reach ${parsed.origin} was declined.` };
-            }
+        if (!(await chrome.permissions.contains({ origins: [origin] }))) {
+            return {
+                ok: false,
+                error: `Permission to reach ${parsed.origin} was not granted.`
+            };
         }
 
-        // Point at a different server, so the old server's token is useless.
+        // Pointing at a different server makes the old server's token useless.
         await clearSession();
         await chrome.storage.local.set({ apiUrl: parsed.origin });
 

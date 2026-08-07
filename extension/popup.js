@@ -9,6 +9,7 @@ const el = (id) => document.getElementById(id);
 const send = (message) => chrome.runtime.sendMessage(message);
 
 let currentJob = null;
+let currentTab = null;
 let authMode = "signin";
 // Populated from /health so the invite field appears only where it applies.
 let registrationPolicy = { open: true, invite_required: false };
@@ -191,28 +192,51 @@ async function loadSettings() {
     }
 }
 
-el("settings-form").addEventListener("submit", async (event) => {
+el("settings-form").addEventListener("submit", (event) => {
     event.preventDefault();
 
-    const submit = el("settings-submit");
-    submit.disabled = true;
-    setSettingsStatus("Checking…");
+    const raw = el("settings-api-url").value.trim();
 
-    const response = await send({
-        type: "SET_API_URL",
-        apiUrl: el("settings-api-url").value.trim()
-    });
-
-    submit.disabled = false;
-
-    if (!response.ok) {
-        setSettingsStatus(response.error, "warning");
+    let parsed;
+    try {
+        parsed = new URL(raw);
+    } catch (err) {
+        setSettingsStatus("That is not a valid URL.", "warning");
         return;
     }
 
-    setSettingsStatus(`✅ Now using ${response.data.apiUrl}. Please sign in.`, "success-text");
-    // Changing servers clears the session, so return to the signed-out state.
-    await initialize();
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+        setSettingsStatus("The address must start with http:// or https://", "warning");
+        return;
+    }
+
+    const submit = el("settings-submit");
+    submit.disabled = true;
+    setSettingsStatus("Requesting access…");
+
+    // Called synchronously inside the click handler, before any await: the
+    // user gesture is consumed by the first await, and a service worker
+    // cannot call this at all. Requesting an already-granted origin is a
+    // no-op that resolves true without prompting.
+    chrome.permissions.request({ origins: [`${parsed.origin}/*`] }, async (granted) => {
+        if (!granted) {
+            submit.disabled = false;
+            setSettingsStatus(`Access to ${parsed.origin} was declined.`, "warning");
+            return;
+        }
+
+        const response = await send({ type: "SET_API_URL", apiUrl: parsed.origin });
+        submit.disabled = false;
+
+        if (!response.ok) {
+            setSettingsStatus(response.error, "warning");
+            return;
+        }
+
+        setSettingsStatus(`✅ Now using ${response.data.apiUrl}. Please sign in.`, "success-text");
+        // Changing servers clears the session, so return to the signed-out state.
+        await initialize();
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -309,6 +333,9 @@ async function activeTab() {
 
 async function scanActivePage() {
     const tab = await activeTab();
+    // Cached so the "enable on this site" click handler can read it without
+    // an await, which would consume the user gesture permissions.request needs.
+    currentTab = tab;
 
     let job;
     try {
@@ -341,20 +368,27 @@ async function scanActivePage() {
     show("btn-save", true);
 }
 
-el("btn-enable-site").addEventListener("click", async () => {
-    const tab = await activeTab();
-    const origin = `${new URL(tab.url).origin}/*`;
+el("btn-enable-site").addEventListener("click", () => {
+    if (!currentTab?.url) return;
 
-    const granted = await chrome.permissions.request({ origins: [origin] });
-    if (!granted) return;
+    const origin = `${new URL(currentTab.url).origin}/*`;
+    const tabId = currentTab.id;
 
-    await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        files: ["rules.js", "content.js"]
+    // Requested synchronously so the click's user gesture is still live.
+    chrome.permissions.request({ origins: [origin] }, async (granted) => {
+        if (!granted) {
+            setStatus(`Access to ${origin} was declined.`, "warning");
+            return;
+        }
+
+        await chrome.scripting.executeScript({
+            target: { tabId },
+            files: ["rules.js", "content.js"]
+        });
+
+        show("btn-enable-site", false);
+        await scanActivePage();
     });
-
-    show("btn-enable-site", false);
-    await scanActivePage();
 });
 
 // ---------------------------------------------------------------------------
