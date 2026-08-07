@@ -78,3 +78,63 @@ def test_every_mapped_status_is_a_valid_status():
 
 def test_category_matching_is_case_insensitive():
     assert to_status("interview") == "INTERVIEW"
+
+
+# =====================================================================
+# OAUTH STATE (survives the redirect back from Google)
+# =====================================================================
+def test_oauth_state_round_trips_through_the_workspace(monkeypatch, tmp_path):
+    """Google redirects back as a fresh page load, so the state cannot live
+    in the web session — it has to be readable from storage afterwards."""
+    from integrations import gmail_client
+
+    state_file = tmp_path / "state.json"
+    monkeypatch.setattr(gmail_client, "_state_path", lambda user_id: state_file)
+
+    import json, time
+    state_file.write_text(
+        json.dumps({"state": "abc123", "expires_at": time.time() + 600})
+    )
+
+    assert gmail_client._load_pending_state(1) == "abc123"
+
+
+def test_expired_oauth_state_is_discarded(monkeypatch, tmp_path):
+    from integrations import gmail_client
+
+    state_file = tmp_path / "state.json"
+    monkeypatch.setattr(gmail_client, "_state_path", lambda user_id: state_file)
+
+    import json, time
+    state_file.write_text(
+        json.dumps({"state": "stale", "expires_at": time.time() - 1})
+    )
+
+    assert gmail_client._load_pending_state(1) is None
+    assert not state_file.exists()
+
+
+def test_missing_oauth_state_is_none(monkeypatch, tmp_path):
+    from integrations import gmail_client
+
+    monkeypatch.setattr(gmail_client, "_state_path", lambda user_id: tmp_path / "nope.json")
+
+    assert gmail_client._load_pending_state(1) is None
+
+
+def test_complete_auth_rejects_a_mismatched_state(monkeypatch, tmp_path):
+    """The check that stops one user's callback attaching a mailbox to another."""
+    import pytest as _pytest
+    from integrations import gmail_client
+
+    state_file = tmp_path / "state.json"
+    monkeypatch.setattr(gmail_client, "_state_path", lambda user_id: state_file)
+    monkeypatch.setattr(gmail_client, "_require_credentials_file", lambda: None)
+
+    import json, time
+    state_file.write_text(
+        json.dumps({"state": "expected", "expires_at": time.time() + 600})
+    )
+
+    with _pytest.raises(gmail_client.GmailAuthError, match="did not match"):
+        gmail_client.complete_auth(1, "some-code", "attacker-supplied")

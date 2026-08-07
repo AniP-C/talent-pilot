@@ -315,14 +315,11 @@ def render_gmail_connect(user: auth.User) -> None:
         return
 
     try:
-        auth_url, state = gmail_client.build_auth_url(user.id)
+        auth_url = gmail_client.build_auth_url(user.id)
     except gmail_client.GmailAuthError as exc:
         st.sidebar.error(str(exc))
         return
 
-    # Held in the session so the callback can be matched to this user and this
-    # specific consent request.
-    st.session_state.gmail_oauth_state = state
     st.sidebar.link_button("Connect Gmail", auth_url, use_container_width=True)
     st.sidebar.caption("You'll be returned here after approving access.")
 
@@ -331,24 +328,25 @@ def handle_gmail_callback(user: auth.User) -> None:
     """Complete a hosted Gmail consent redirect, if one just landed."""
     params = st.query_params
 
-    if "code" not in params:
+    # A handoff code also arrives as ?code=, so only treat this as an OAuth
+    # callback when Google's state parameter is present too.
+    if "code" not in params or "state" not in params:
         return
 
-    expected_state = st.session_state.pop("gmail_oauth_state", None)
-    returned_state = params.get("state")
+    code = params["code"]
+    state = params["state"]
 
     # Clear the query string either way so a refresh cannot replay the code.
     st.query_params.clear()
 
-    if not expected_state or returned_state != expected_state:
-        logger.warning("Discarded Gmail callback with mismatched state for user %s", user.id)
-        st.sidebar.error("That Gmail authorisation did not match your session. Try again.")
-        return
-
     try:
-        gmail_client.complete_auth(user.id, params["code"], expected_state)
+        # The state is validated inside complete_auth against the value
+        # recorded in this user's workspace when the link was built.
+        gmail_client.complete_auth(user.id, code, state)
         st.sidebar.success("Gmail connected.")
+        st.rerun()
     except gmail_client.GmailAuthError as exc:
+        logger.warning("Gmail callback failed for user %s: %s", user.id, exc)
         st.sidebar.error(str(exc))
 
 

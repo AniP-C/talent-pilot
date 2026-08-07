@@ -5,8 +5,12 @@ inside that user's workspace rather than in a shared token.json at the repo
 root.
 """
 
+import json
 import os
+import secrets
 import sys
+import time
+from typing import Optional
 
 from google.auth.transport.requests import Request
 from google.auth.exceptions import RefreshError
@@ -112,12 +116,43 @@ def authenticate_gmail(user_id: int, allow_interactive: bool = True):
 # =====================================================================
 # HOSTED (REDIRECT) OAUTH FLOW
 # =====================================================================
-def build_auth_url(user_id: int) -> tuple[str, str]:
-    """Return ``(authorization_url, state)`` for the hosted consent flow.
+# How long a pending consent request stays valid.
+STATE_TTL_SECONDS = 900
 
-    The caller stores ``state`` and must pass it back to
-    :func:`complete_auth`, which is what stops one user's callback being
-    replayed to attach a mailbox to somebody else's account.
+
+def _state_path(user_id: int):
+    return workspace.workspace_dir(user_id) / "gmail_oauth_state.json"
+
+
+def _load_pending_state(user_id: int) -> Optional[str]:
+    """Return the pending consent state for a user, if still valid."""
+    path = _state_path(user_id)
+
+    if not path.exists():
+        return None
+
+    try:
+        stored = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+    if time.time() > stored.get("expires_at", 0):
+        path.unlink(missing_ok=True)
+        return None
+
+    return stored.get("state")
+
+
+def build_auth_url(user_id: int) -> str:
+    """Return the Google consent URL for this user.
+
+    The ``state`` is stored in the user's workspace rather than in the web
+    session: Google redirects back as a fresh page load, which starts a new
+    session, so anything held in memory would already be gone by the time
+    the callback arrives.
+
+    A still-valid pending state is reused so that re-rendering the page does
+    not invalidate a consent link the user is about to click.
     """
     _require_credentials_file()
 
@@ -128,20 +163,43 @@ def build_auth_url(user_id: int) -> tuple[str, str]:
         str(GMAIL_CREDENTIALS_PATH), scopes=SCOPES, redirect_uri=redirect_uri()
     )
 
+    existing = _load_pending_state(user_id)
+
     authorization_url, state = flow.authorization_url(
         # offline + consent are what actually yield a refresh token; without
         # them the connection silently dies after an hour.
         access_type="offline",
         prompt="consent",
         include_granted_scopes="true",
+        **({"state": existing} if existing else {}),
     )
 
-    return authorization_url, state
+    if not existing:
+        _state_path(user_id).write_text(
+            json.dumps({"state": state, "expires_at": time.time() + STATE_TTL_SECONDS}),
+            encoding="utf-8",
+        )
+
+    return authorization_url
 
 
 def complete_auth(user_id: int, code: str, state: str) -> None:
-    """Exchange an authorisation code for credentials and store them."""
+    """Exchange an authorisation code for credentials and store them.
+
+    Verifies ``state`` against the value recorded when the consent URL was
+    built, which is what stops one user's callback attaching a mailbox to
+    somebody else's account.
+    """
     _require_credentials_file()
+
+    expected = _load_pending_state(user_id)
+    _state_path(user_id).unlink(missing_ok=True)
+
+    if not expected or not secrets.compare_digest(expected, state or ""):
+        logger.warning("Gmail callback state mismatch for user %s", user_id)
+        raise GmailAuthError(
+            "That authorisation did not match a pending request. Please try again."
+        )
 
     flow = Flow.from_client_secrets_file(
         str(GMAIL_CREDENTIALS_PATH),
