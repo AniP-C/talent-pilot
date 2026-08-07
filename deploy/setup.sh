@@ -132,7 +132,11 @@ info "Registering systemd services"
 cp "${REPO_ROOT}/deploy/talent-pilot-api.service" /etc/systemd/system/
 cp "${REPO_ROOT}/deploy/talent-pilot-dashboard.service" /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now talent-pilot-api talent-pilot-dashboard
+systemctl enable talent-pilot-api talent-pilot-dashboard
+
+# restart, not "enable --now": on a re-run the services are already active,
+# and --now would leave them running the previous version of the code.
+systemctl restart talent-pilot-api talent-pilot-dashboard
 
 # ---------------------------------------------------------------------
 info "Configuring Caddy"
