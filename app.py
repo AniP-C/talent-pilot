@@ -8,6 +8,7 @@ from datetime import date
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 import auth
 import db
@@ -20,6 +21,7 @@ from config import (
     JOB_SOURCES,
     REGISTRATION_CLOSED,
     SIGNUP_CODE,
+    TOKEN_TTL_DAYS,
     VALID_STATUSES,
     logger,
 )
@@ -42,6 +44,9 @@ ui.inject_styles()
 def get_signed_in_user() -> auth.User | None:
     data = st.session_state.get("user")
     return auth.User(**data) if data else None
+
+
+SESSION_COOKIE = "tp_session"
 
 
 def try_handoff_sign_in() -> bool:
@@ -67,6 +72,75 @@ def try_handoff_sign_in() -> bool:
     return True
 
 
+def try_cookie_sign_in() -> bool:
+    """Restore a session from the browser cookie.
+
+    Streamlit's session_state lives in the websocket connection and is lost
+    on reload, so without this every refresh would return to the login form.
+    """
+    try:
+        token = st.context.cookies.get(SESSION_COOKIE)
+    except Exception:  # noqa: BLE001 - older Streamlit without st.context
+        return False
+
+    if not token:
+        return False
+
+    user = auth.verify_token(token)
+    if user is None:
+        return False
+
+    st.session_state.user = {
+        "id": user.id,
+        "email": user.email,
+        "created_at": user.created_at,
+    }
+    db.create_table(workspace.jobs_db_path(user.id))
+    return True
+
+
+def _write_session_cookie(value: str, max_age: int) -> None:
+    """Set the session cookie from inside a Streamlit component.
+
+    Streamlit cannot set cookies server-side, and its component iframe is
+    sandboxed without `allow-top-navigation`, so it cannot redirect to an
+    endpoint that would. It *is* granted `allow-same-origin`, though, which
+    means document.cookie inside the frame writes to the parent's origin.
+
+    The consequence is that this cookie cannot be HttpOnly — cookies written
+    by JavaScript never are. It carries a revocable API token rather than
+    credentials, and is scoped SameSite=Lax and Secure when hosted.
+    """
+    attributes = f"path=/; max-age={max_age}; samesite=lax"
+    if IS_HOSTED:
+        attributes += "; secure"
+
+    components.html(
+        "<script>document.cookie = "
+        f"{json.dumps(SESSION_COOKIE + '=')} + {json.dumps(value)} + "
+        f"{json.dumps('; ' + attributes)};</script>",
+        height=0,
+    )
+
+
+def ensure_session_cookie(user: auth.User) -> None:
+    """Keep this sign-in alive across page reloads.
+
+    Called on every render rather than once at login: the component has to be
+    part of a normally-rendered page to execute, and an st.rerun() straight
+    after sign-in would discard it before the browser ran the script. Writing
+    the same cookie repeatedly is harmless, and the token is minted once per
+    session and cached so the tokens table does not grow on every rerun.
+    """
+    token = st.session_state.get("session_token")
+
+    if not token:
+        token = auth.issue_token(user.id)
+        st.session_state.session_token = token
+
+    _write_session_cookie(token, TOKEN_TTL_DAYS * 24 * 3600)
+
+
 def sign_in(user: auth.User) -> None:
     st.session_state.user = {
         "id": user.id,
@@ -81,7 +155,18 @@ def sign_out() -> None:
     user = st.session_state.get("user")
     if user:
         logger.info("Account %s signed out of the dashboard", user["id"])
+
+    # Revoke server-side as well as clearing the cookie, so a copied token
+    # cannot be replayed after signing out.
+    try:
+        token = st.context.cookies.get(SESSION_COOKIE)
+        if token:
+            auth.revoke_token(token)
+    except Exception:  # noqa: BLE001 - cookie access is best-effort
+        pass
+
     st.session_state.clear()
+    _write_session_cookie("", 0)
 
 
 # =====================================================================
@@ -611,14 +696,18 @@ def render_settings(user: auth.User) -> None:
 def main() -> None:
     user = get_signed_in_user()
 
-    # A handoff from the extension signs the user in before the auth screen
-    # would otherwise be drawn.
+    # Restore order matters: an explicit handoff wins over an existing
+    # cookie, so opening the dashboard from a second account works.
     if user is None and try_handoff_sign_in():
+        user = get_signed_in_user()
+    if user is None and try_cookie_sign_in():
         user = get_signed_in_user()
 
     if user is None:
         render_auth_screen()
         return
+
+    ensure_session_cookie(user)
 
     db_path = workspace.jobs_db_path(user.id)
     db.create_table(db_path)

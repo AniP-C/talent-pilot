@@ -96,6 +96,11 @@ TOKEN_TTL_DAYS = int(os.getenv("TOKEN_TTL_DAYS", "30"))
 PUBLIC_URL = os.getenv("PUBLIC_URL", "").rstrip("/")
 IS_HOSTED = bool(PUBLIC_URL)
 
+# Where the dashboard reaches the API. When hosted, both sit behind the same
+# reverse proxy on one origin, which is what lets the API set a cookie the
+# dashboard can read.
+API_BASE_URL = PUBLIC_URL or f"http://{API_HOST}:{API_PORT}"
+
 # =====================================================================
 # REGISTRATION AND ABUSE CONTROLS
 # =====================================================================

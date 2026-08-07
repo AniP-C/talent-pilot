@@ -24,7 +24,7 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
 
@@ -48,6 +48,7 @@ from config import (
     PUBLIC_URL,
     REGISTRATION_CLOSED,
     SIGNUP_CODE,
+    TOKEN_TTL_DAYS,
     TRUST_PROXY_HEADERS,
     VALID_STATUSES,
     logger,
@@ -319,6 +320,55 @@ def logout(
 @app.get("/auth/me")
 def me(user: auth.User = Depends(current_user)) -> dict:
     return {"user_id": user.id, "email": user.email}
+
+
+# Name of the cookie that keeps a dashboard session alive across reloads.
+SESSION_COOKIE = "tp_session"
+
+
+@app.get("/auth/set-session")
+def set_session(code: str) -> RedirectResponse:
+    """Redeem a handoff code, set a session cookie, and land on the dashboard.
+
+    Streamlit can read cookies but cannot set them, so this endpoint does it.
+    Both run on the same origin behind the reverse proxy, so the cookie set
+    here is visible to the dashboard.
+    """
+    target = PUBLIC_URL or DASHBOARD_URL
+    user = auth.consume_handoff_code(code)
+
+    if user is None:
+        return RedirectResponse(url=f"{target}/?session=expired", status_code=303)
+
+    token = auth.issue_token(user.id)
+    response = RedirectResponse(url=f"{target}/", status_code=303)
+
+    response.set_cookie(
+        key=SESSION_COOKIE,
+        value=token,
+        max_age=TOKEN_TTL_DAYS * 24 * 3600,
+        httponly=True,           # unreadable from page JavaScript
+        secure=bool(PUBLIC_URL),  # only over HTTPS when hosted
+        samesite="lax",
+        path="/",
+    )
+
+    logger.info("Session cookie issued for account %s", user.id)
+    return response
+
+
+@app.get("/auth/end-session")
+def end_session(request: Request) -> RedirectResponse:
+    """Revoke the session token and clear the cookie."""
+    target = PUBLIC_URL or DASHBOARD_URL
+
+    token = request.cookies.get(SESSION_COOKIE)
+    if token:
+        auth.revoke_token(token)
+
+    response = RedirectResponse(url=f"{target}/", status_code=303)
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response
 
 
 @app.post("/auth/handoff")

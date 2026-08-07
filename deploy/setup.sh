@@ -75,9 +75,14 @@ mkdir -p "$APP_DIR" "$DATA_DIR" "$LOG_DIR" "$ENV_DIR"
 info "Installing application to ${APP_DIR}"
 # ---------------------------------------------------------------------
 # Copy the working tree, excluding local state that must not follow it.
+#
+# credentials.json is excluded deliberately: it is uploaded to the server
+# out-of-band and is not in the repo, so without this --delete would remove
+# it on every redeploy and silently break Gmail sync.
 rsync -a --delete \
     --exclude '.git' --exclude '.venv' --exclude 'data' --exclude 'logs' \
     --exclude '__pycache__' --exclude '.env' --exclude 'tests' \
+    --exclude 'credentials.json' --exclude 'token.json' \
     "${REPO_ROOT}/" "${APP_DIR}/"
 
 python3 -m venv "${APP_DIR}/.venv"
