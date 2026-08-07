@@ -113,6 +113,17 @@ def init_db(db_path=None) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_attempts
                 ON login_attempts(identifier, attempted_at);
+
+            -- Short-lived, single-use codes that hand an authenticated
+            -- session from the extension to the dashboard without making
+            -- the user sign in twice.
+            CREATE TABLE IF NOT EXISTS handoff_codes (
+                code_hash  TEXT PRIMARY KEY,
+                user_id    INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
             """
         )
 
@@ -430,6 +441,74 @@ def revoke_token(token: str, db_path=None) -> None:
         conn.execute(
             "DELETE FROM api_tokens WHERE token_hash = ?", (_token_digest(token),)
         )
+
+
+# =====================================================================
+# HANDOFF CODES (extension -> dashboard single sign-on)
+# =====================================================================
+# Deliberately short: the code only has to survive opening a new tab.
+HANDOFF_TTL_SECONDS = 60
+
+
+def issue_handoff_code(user_id: int, db_path=None) -> str:
+    """Mint a single-use code that signs this user into the dashboard.
+
+    The code travels in a URL, so it is stored hashed, expires in a minute,
+    and is destroyed the first time it is redeemed.
+    """
+    code = secrets.token_urlsafe(24)
+    now = datetime.now(timezone.utc)
+
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO handoff_codes (code_hash, user_id, created_at, expires_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                _token_digest(code),
+                int(user_id),
+                now.isoformat(),
+                (now + timedelta(seconds=HANDOFF_TTL_SECONDS)).isoformat(),
+            ),
+        )
+        conn.execute(
+            "DELETE FROM handoff_codes WHERE expires_at < ?", (now.isoformat(),)
+        )
+
+    return code
+
+
+def consume_handoff_code(code: str, db_path=None) -> Optional[User]:
+    """Redeem a handoff code exactly once, returning the user or None."""
+    if not code:
+        return None
+
+    digest = _token_digest(code)
+
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT u.id, u.email, u.created_at, h.expires_at
+            FROM handoff_codes h
+            JOIN users u ON u.id = h.user_id
+            WHERE h.code_hash = ?
+            """,
+            (digest,),
+        ).fetchone()
+
+        if not row:
+            return None
+
+        # Deleted whether or not it had expired, so a code is never reusable.
+        conn.execute("DELETE FROM handoff_codes WHERE code_hash = ?", (digest,))
+
+        if datetime.fromisoformat(row["expires_at"]) < datetime.now(timezone.utc):
+            logger.warning("Rejected expired handoff code for account %s", row["id"])
+            return None
+
+    logger.info("Handoff code redeemed for account %s", row["id"])
+    return User(id=row["id"], email=row["email"], created_at=row["created_at"])
 
 
 def _utcnow() -> str:

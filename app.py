@@ -44,6 +44,29 @@ def get_signed_in_user() -> auth.User | None:
     return auth.User(**data) if data else None
 
 
+def try_handoff_sign_in() -> bool:
+    """Adopt a session handed over from the extension, if one is present.
+
+    The extension opens the dashboard with ?handoff=<single-use code>, which
+    is redeemed here so the user is not asked to sign in a second time.
+    """
+    code = st.query_params.get("handoff")
+    if not code:
+        return False
+
+    # Cleared immediately so the code never lingers in the address bar,
+    # bookmarks, or a shared link.
+    st.query_params.clear()
+
+    user = auth.consume_handoff_code(code)
+    if user is None:
+        st.warning("That sign-in link had already been used or expired. Please sign in.")
+        return False
+
+    sign_in(user)
+    return True
+
+
 def sign_in(user: auth.User) -> None:
     st.session_state.user = {
         "id": user.id,
@@ -587,6 +610,11 @@ def render_settings(user: auth.User) -> None:
 # =====================================================================
 def main() -> None:
     user = get_signed_in_user()
+
+    # A handoff from the extension signs the user in before the auth screen
+    # would otherwise be drawn.
+    if user is None and try_handoff_sign_in():
+        user = get_signed_in_user()
 
     if user is None:
         render_auth_screen()

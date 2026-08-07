@@ -321,6 +321,23 @@ def me(user: auth.User = Depends(current_user)) -> dict:
     return {"user_id": user.id, "email": user.email}
 
 
+@app.post("/auth/handoff")
+def handoff(user: auth.User = Depends(current_user)) -> dict:
+    """Mint a single-use code so the dashboard can adopt this session.
+
+    Lets the extension open the dashboard already signed in, instead of
+    making the user authenticate a second time.
+    """
+    code = auth.issue_handoff_code(user.id)
+    target = PUBLIC_URL or DASHBOARD_URL
+
+    return {
+        "code": code,
+        "url": f"{target}/?handoff={code}",
+        "expires_in": auth.HANDOFF_TTL_SECONDS,
+    }
+
+
 # =====================================================================
 # PROFILES
 # =====================================================================

@@ -255,6 +255,11 @@ const handlers = {
         return { ok: true, data: {} };
     },
 
+    // Returns a URL that opens the dashboard already signed in.
+    OPEN_DASHBOARD() {
+        return apiRequest("/auth/handoff", { method: "POST" });
+    },
+
     LIST_PROFILES() {
         return apiRequest("/profiles");
     },

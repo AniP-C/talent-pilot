@@ -154,3 +154,56 @@ def test_change_password_requires_current_password(users_db):
 
     with pytest.raises(auth.AuthError, match="Current password is incorrect"):
         auth.change_password(user.id, "wrong", "new-password-456", db_path=users_db)
+
+
+# =====================================================================
+# HANDOFF CODES (extension -> dashboard sign-on)
+# =====================================================================
+def test_handoff_code_signs_in_the_right_user(users_db):
+    user = auth.register("user@example.com", "password123", db_path=users_db)
+    code = auth.issue_handoff_code(user.id, db_path=users_db)
+
+    redeemed = auth.consume_handoff_code(code, db_path=users_db)
+
+    assert redeemed is not None
+    assert redeemed.id == user.id
+
+
+def test_handoff_code_works_only_once(users_db):
+    """A code travels in a URL, so replaying it must not work."""
+    user = auth.register("user@example.com", "password123", db_path=users_db)
+    code = auth.issue_handoff_code(user.id, db_path=users_db)
+
+    assert auth.consume_handoff_code(code, db_path=users_db) is not None
+    assert auth.consume_handoff_code(code, db_path=users_db) is None
+
+
+@pytest.mark.parametrize("bogus", ["", "not-a-code", None])
+def test_unknown_handoff_code_is_rejected(users_db, bogus):
+    assert auth.consume_handoff_code(bogus, db_path=users_db) is None
+
+
+def test_expired_handoff_code_is_rejected(users_db):
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+
+    user = auth.register("user@example.com", "password123", db_path=users_db)
+    code = auth.issue_handoff_code(user.id, db_path=users_db)
+
+    past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    with sqlite3.connect(users_db) as conn:
+        conn.execute("UPDATE handoff_codes SET expires_at = ?", (past,))
+
+    assert auth.consume_handoff_code(code, db_path=users_db) is None
+
+
+def test_handoff_code_is_stored_hashed(users_db):
+    import sqlite3
+
+    user = auth.register("user@example.com", "password123", db_path=users_db)
+    code = auth.issue_handoff_code(user.id, db_path=users_db)
+
+    with sqlite3.connect(users_db) as conn:
+        stored = conn.execute("SELECT code_hash FROM handoff_codes").fetchone()[0]
+
+    assert stored != code

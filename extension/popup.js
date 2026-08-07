@@ -443,8 +443,14 @@ el("btn-save").addEventListener("click", async () => {
     show("btn-save", false);
 });
 
-el("open-dashboard").addEventListener("click", () => {
-    chrome.tabs.create({ url: dashboardUrl });
+el("open-dashboard").addEventListener("click", async () => {
+    // Ask the API for a one-time code so the dashboard adopts this session
+    // instead of presenting a second sign-in form.
+    const response = await send({ type: "OPEN_DASHBOARD" });
+
+    chrome.tabs.create({
+        url: response.ok ? response.data.url : dashboardUrl
+    });
 });
 
 // ---------------------------------------------------------------------------
