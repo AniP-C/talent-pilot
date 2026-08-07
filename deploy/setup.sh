@@ -144,6 +144,22 @@ systemctl enable talent-pilot-api talent-pilot-dashboard
 systemctl restart talent-pilot-api talent-pilot-dashboard
 
 # ---------------------------------------------------------------------
+info "Installing nightly backups"
+# ---------------------------------------------------------------------
+install -m 755 "${REPO_ROOT}/deploy/backup.sh" /usr/local/bin/talent-pilot-backup
+
+# 03:20 rather than exactly 03:00 — a slightly odd minute avoids the pile-up
+# of everything on the machine waking at the top of the hour.
+cat > /etc/cron.d/talent-pilot-backup <<'EOF'
+# Nightly Talent Pilot backup. Output goes to syslog:
+#   journalctl -t talent-pilot-backup
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+20 3 * * * root /usr/local/bin/talent-pilot-backup 2>&1 | logger -t talent-pilot-backup
+EOF
+chmod 644 /etc/cron.d/talent-pilot-backup
+
+# ---------------------------------------------------------------------
 info "Configuring Caddy"
 # ---------------------------------------------------------------------
 if ! command -v caddy &>/dev/null; then
