@@ -93,10 +93,18 @@ def test_oauth_state_round_trips_through_the_workspace(monkeypatch, tmp_path):
 
     import json, time
     state_file.write_text(
-        json.dumps({"state": "abc123", "expires_at": time.time() + 600})
+        json.dumps({
+            "state": "abc123",
+            "code_verifier": "verifier-xyz",
+            "expires_at": time.time() + 600,
+        })
     )
 
-    assert gmail_client._load_pending_state(1) == "abc123"
+    # The PKCE verifier must survive alongside the state, or the token
+    # exchange fails with "Missing code verifier".
+    assert gmail_client._load_pending_state(1)["code_verifier"] == "verifier-xyz"
+
+    assert gmail_client._load_pending_state(1)["state"] == "abc123"
 
 
 def test_expired_oauth_state_is_discarded(monkeypatch, tmp_path):
@@ -133,7 +141,11 @@ def test_complete_auth_rejects_a_mismatched_state(monkeypatch, tmp_path):
 
     import json, time
     state_file.write_text(
-        json.dumps({"state": "expected", "expires_at": time.time() + 600})
+        json.dumps({
+            "state": "expected",
+            "code_verifier": "v",
+            "expires_at": time.time() + 600,
+        })
     )
 
     with _pytest.raises(gmail_client.GmailAuthError, match="did not match"):

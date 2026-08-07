@@ -124,8 +124,13 @@ def _state_path(user_id: int):
     return workspace.workspace_dir(user_id) / "gmail_oauth_state.json"
 
 
-def _load_pending_state(user_id: int) -> Optional[str]:
-    """Return the pending consent state for a user, if still valid."""
+def _load_pending_state(user_id: int) -> Optional[dict]:
+    """Return the pending consent request for a user, if still valid.
+
+    Carries both the ``state`` and the PKCE ``code_verifier``: the verifier is
+    generated when the consent URL is built and must be presented again at
+    token exchange, or Google rejects it with "Missing code verifier".
+    """
     path = _state_path(user_id)
 
     if not path.exists():
@@ -140,7 +145,7 @@ def _load_pending_state(user_id: int) -> Optional[str]:
         path.unlink(missing_ok=True)
         return None
 
-    return stored.get("state")
+    return stored if stored.get("state") else None
 
 
 def build_auth_url(user_id: int) -> str:
@@ -159,11 +164,17 @@ def build_auth_url(user_id: int) -> str:
     if not IS_HOSTED:
         raise GmailAuthError("PUBLIC_URL is not configured for this instance.")
 
+    existing = _load_pending_state(user_id)
+
+    # Reuse a live pending request verbatim. Rebuilding it would mint a fresh
+    # state and PKCE verifier, silently invalidating the link already on
+    # screen that the user is about to click.
+    if existing and existing.get("authorization_url"):
+        return existing["authorization_url"]
+
     flow = Flow.from_client_secrets_file(
         str(GMAIL_CREDENTIALS_PATH), scopes=SCOPES, redirect_uri=redirect_uri()
     )
-
-    existing = _load_pending_state(user_id)
 
     authorization_url, state = flow.authorization_url(
         # offline + consent are what actually yield a refresh token; without
@@ -171,14 +182,21 @@ def build_auth_url(user_id: int) -> str:
         access_type="offline",
         prompt="consent",
         include_granted_scopes="true",
-        **({"state": existing} if existing else {}),
     )
 
-    if not existing:
-        _state_path(user_id).write_text(
-            json.dumps({"state": state, "expires_at": time.time() + STATE_TTL_SECONDS}),
-            encoding="utf-8",
-        )
+    _state_path(user_id).write_text(
+        json.dumps(
+            {
+                "state": state,
+                # Set by authorization_url() when PKCE is in play; fetch_token
+                # needs the identical value back.
+                "code_verifier": flow.code_verifier,
+                "authorization_url": authorization_url,
+                "expires_at": time.time() + STATE_TTL_SECONDS,
+            }
+        ),
+        encoding="utf-8",
+    )
 
     return authorization_url
 
@@ -192,10 +210,10 @@ def complete_auth(user_id: int, code: str, state: str) -> None:
     """
     _require_credentials_file()
 
-    expected = _load_pending_state(user_id)
+    pending = _load_pending_state(user_id)
     _state_path(user_id).unlink(missing_ok=True)
 
-    if not expected or not secrets.compare_digest(expected, state or ""):
+    if not pending or not secrets.compare_digest(pending["state"], state or ""):
         logger.warning("Gmail callback state mismatch for user %s", user_id)
         raise GmailAuthError(
             "That authorisation did not match a pending request. Please try again."
@@ -207,6 +225,10 @@ def complete_auth(user_id: int, code: str, state: str) -> None:
         redirect_uri=redirect_uri(),
         state=state,
     )
+
+    # Restored from the pending request; without it Google rejects the
+    # exchange with "Missing code verifier".
+    flow.code_verifier = pending.get("code_verifier")
 
     try:
         flow.fetch_token(code=code)
