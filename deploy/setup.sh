@@ -145,7 +145,7 @@ if ! command -v caddy &>/dev/null; then
     apt-get update -qq && apt-get install -y -qq caddy
 fi
 
-mkdir -p /var/log/caddy && chown caddy:caddy /var/log/caddy
+# No /var/log/caddy needed — Caddy logs to journald. See deploy/Caddyfile.
 
 API_PATHS='/health* /auth/* /jobs* /profiles* /check-job* /save-job* /analyze-job* /generate-answer* /save-answer* /docs* /openapi.json'
 

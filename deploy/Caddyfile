@@ -36,12 +36,12 @@ YOUR_DOMAIN {
 		-Server
 	}
 
-	log {
-		output file /var/log/caddy/talent-pilot.log {
-			roll_size 10MiB
-			roll_keep 3
-		}
-	}
+	# Access logs go to journald, readable with `journalctl -u caddy`.
+	#
+	# Deliberately NOT logging to a file: Caddy's packaged systemd unit is
+	# sandboxed such that it cannot open a writer under /var/log/caddy even
+	# when that directory is owned by the caddy user, and the resulting
+	# "permission denied" stops Caddy from starting at all.
 }
 
 # ---------------------------------------------------------------------
