@@ -11,9 +11,11 @@ import pytest
 from job_fields import (
     InvalidJobField,
     company_from_email_domain,
+    company_from_url,
     is_placeholder,
     looks_like_role,
     normalize,
+    prettify_slug,
     validate_company,
     validate_role,
 )
@@ -187,8 +189,61 @@ def test_malformed_sender_is_handled():
 
 
 # =====================================================================
+# POSTING URL -> COMPANY
+# =====================================================================
+# Used to repair rows whose company was mis-scraped: the saved link is
+# independent of the markup that was misread. Each board hides the employer
+# somewhere different, so there is no single rule.
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        # First path segment.
+        ("https://boards.greenhouse.io/nexuslabs/jobs/1234", "Nexuslabs"),
+        ("https://job-boards.greenhouse.io/acme-robotics/jobs/99", "Acme Robotics"),
+        ("https://jobs.lever.co/nexuslabs/xyz-123", "Nexuslabs"),
+        ("https://jobs.ashbyhq.com/nexus-labs/abc", "Nexus Labs"),
+        ("https://apply.workable.com/nexus-labs/j/ABC/", "Nexus Labs"),
+        ("https://jobs.smartrecruiters.com/NexusLabs/7439", "Nexuslabs"),
+        # Subdomain.
+        ("https://nexuslabs.workable.com/j/ABC123", "Nexuslabs"),
+        ("https://nexuslabs.recruitee.com/o/ai-engineer", "Nexuslabs"),
+        ("https://acme.wd1.myworkdayjobs.com/en-US/careers/job/x", "Acme"),
+        # Ordinary career pages.
+        ("https://careers.nexuslabs.com/openings/42", "Nexuslabs"),
+        ("https://nexuslabs.com/jobs/42", "Nexuslabs"),
+        # Wellfound keeps it under /company/.
+        ("https://wellfound.com/company/nexus-labs/jobs/123-ai", "Nexus Labs"),
+    ],
+)
+def test_company_is_recovered_from_a_posting_url(url, expected):
+    assert company_from_url(url) == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Aggregators genuinely do not carry the employer in the URL. Guessing
+        # would yield "Linkedin" as a company, which is worse than admitting it.
+        "https://www.linkedin.com/jobs/view/4012345678",
+        "https://in.indeed.com/viewjob?jk=abc",
+        "https://www.naukri.com/job-listings-x-123",
+        "",
+        "not a url",
+    ],
+)
+def test_opaque_urls_yield_no_company(url):
+    assert company_from_url(url) == ""
+
+
+# =====================================================================
 # HELPERS
 # =====================================================================
+def test_prettify_slug():
+    assert prettify_slug("acme-robotics") == "Acme Robotics"
+    assert prettify_slug("nexus_labs") == "Nexus Labs"
+    assert prettify_slug("") == ""
+
+
 def test_normalize_collapses_whitespace():
     assert normalize("  a   b  ") == "a b"
 

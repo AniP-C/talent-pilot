@@ -22,7 +22,8 @@ instance, DNS, TLS, OAuth. This document covers every deploy after that one.
 - [4. Update dependencies](#4-update-dependencies)
 - [5. Restart both services](#5-restart-both-services)
 - [6. Verify](#6-verify)
-- [7. Reload the browser extension](#7-reload-the-browser-extension)
+- [7. Repair rows saved by the old scraper](#7-repair-rows-saved-by-the-old-scraper)
+- [8. Reload the browser extension](#8-reload-the-browser-extension)
 - [Rollback](#rollback)
 - [Troubleshooting](#troubleshooting)
 - [The whole thing, as one script](#the-whole-thing-as-one-script)
@@ -198,7 +199,42 @@ dashboard is running the new code.
 
 ---
 
-## 7. Reload the browser extension
+## 7. Repair rows saved by the old scraper
+
+The new code stops bad rows being created; it does not rewrite the ones already
+stored. Any application saved with a company of "AI Engineer" stays broken, and
+keeps opening duplicates every time a recruiter emails about it.
+
+See what needs fixing — this writes nothing:
+
+```bash
+cd /opt/talent-pilot && sudo -u talentpilot .venv/bin/python deploy/fix_bad_companies.py
+```
+
+It reports each broken row, the employer it derived from the saved posting URL,
+and any row it cannot resolve. Rows from LinkedIn and Indeed usually need you to
+supply the company, because those URLs genuinely do not contain it.
+
+You took a backup in [step 2](#2-back-up-first-not-optional-this-time), so apply:
+
+```bash
+sudo -u talentpilot .venv/bin/python deploy/fix_bad_companies.py --apply
+```
+
+Add any companies it could not work out, and re-run:
+
+```bash
+sudo -u talentpilot .venv/bin/python deploy/fix_bad_companies.py --apply --set 12="Nexus Labs" --set 15="Zerodha"
+```
+
+Where repairing a company collides with a duplicate the bug had already created,
+the two rows are merged: the further-along status wins, and notes and stage
+history from both are kept. Every repair is recorded in the timeline with source
+`Cleanup`, so nothing changes silently. Running it twice is a no-op.
+
+---
+
+## 8. Reload the browser extension
 
 `extension/content.js` changed in this release, and Chrome will not pick that
 up on its own. On your laptop:

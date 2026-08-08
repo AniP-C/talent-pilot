@@ -236,5 +236,92 @@ def company_from_email_domain(sender: str) -> str:
     if not name or len(name) < 2 or name in _MAIL_SUBDOMAINS:
         return ""
 
-    # acme-robotics -> Acme Robotics
-    return " ".join(part.capitalize() for part in re.split(r"[-_]+", name) if part)
+    return prettify_slug(name)
+
+
+def prettify_slug(slug: str) -> str:
+    """Turn a URL or domain slug into a display name: acme-robotics -> Acme Robotics."""
+    return " ".join(
+        part.capitalize() for part in re.split(r"[-_]+", str(slug or "")) if part
+    )
+
+
+# ATS boards that put the employer in the FIRST PATH SEGMENT:
+#   boards.greenhouse.io/nexuslabs/jobs/1  ->  nexuslabs
+_ATS_PATH_HOSTS = {
+    "boards.greenhouse.io", "job-boards.greenhouse.io", "greenhouse.io",
+    "jobs.lever.co", "lever.co",
+    "jobs.ashbyhq.com", "ashbyhq.com",
+    "apply.workable.com",
+    "jobs.smartrecruiters.com", "careers.smartrecruiters.com",
+    "jobs.jobvite.com",
+}
+
+# ATS boards that put the employer in the SUBDOMAIN:
+#   nexuslabs.workable.com/j/ABC  ->  nexuslabs
+_ATS_SUBDOMAIN_HOSTS = (
+    "workable.com", "recruitee.com", "bamboohr.com", "teamtailor.com",
+    "breezy.hr", "myworkdayjobs.com", "applytojob.com", "freshteam.com",
+)
+
+# Boards where the employer simply is not in the URL. Guessing from these
+# would produce "Linkedin" as a company, which is worse than admitting defeat.
+_OPAQUE_HOSTS = (
+    "linkedin.com", "indeed.com", "naukri.com", "glassdoor.com",
+    "monster.com", "ziprecruiter.com", "dice.com", "instahyre.com",
+    "cutshort.io", "hirist.com", "google.com", "bing.com",
+)
+
+
+def company_from_url(url: str) -> str:
+    """Guess the employer from a job posting URL, or return "".
+
+    Used to repair rows whose company was mis-scraped: the saved link is
+    independent evidence of who the application was with, and it survives the
+    page markup changing.
+
+    Each board hides the employer somewhere different — a path segment, a
+    subdomain, or not at all — so there is no single rule to apply.
+    """
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+
+    match = re.match(r"^(?:https?://)?([^/?#]+)([^?#]*)", raw, re.IGNORECASE)
+    if not match:
+        return ""
+
+    host = match.group(1).lower().split(":")[0].strip(".")
+    segments = [seg for seg in match.group(2).split("/") if seg]
+
+    if any(host == h or host.endswith("." + h) for h in _OPAQUE_HOSTS):
+        return ""
+
+    # wellfound.com/company/<slug>/jobs/...
+    if "wellfound.com" in host or "angel.co" in host:
+        if len(segments) >= 2 and segments[0] == "company":
+            return prettify_slug(segments[1])
+        return ""
+
+    if host in _ATS_PATH_HOSTS or any(
+        host.endswith("." + h) for h in _ATS_PATH_HOSTS
+    ):
+        # Skip routing prefixes that sit before the employer slug.
+        for segment in segments:
+            if segment.lower() in {"embed", "job", "jobs", "o", "j", "careers"}:
+                continue
+            return prettify_slug(segment)
+        return ""
+
+    for suffix in _ATS_SUBDOMAIN_HOSTS:
+        if host.endswith("." + suffix):
+            sub = host[: -(len(suffix) + 1)].split(".")[0]
+            # Workday hosts look like acme.wd1.myworkdayjobs.com; the leading
+            # label is still the tenant.
+            if sub and sub not in {"www", "apply", "jobs", "careers"}:
+                return prettify_slug(sub)
+            return ""
+
+    # An ordinary company career page: careers.nexuslabs.com -> Nexus Labs.
+    # Reuses the email path by presenting the host as an address.
+    return company_from_email_domain(f"x@{host}")
