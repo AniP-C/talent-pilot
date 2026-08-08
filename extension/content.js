@@ -16,7 +16,6 @@
     // is signed in, so one published build serves everybody.
     // -----------------------------------------------------------------------
     let autofillRules = [];
-    let rulesLoaded = false;
 
     async function loadAutofillRules() {
         try {
@@ -27,7 +26,6 @@
             // an enhancement; the page must keep working without them.
             autofillRules = [];
         }
-        rulesLoaded = true;
     }
 
     // Patterns arrive as strings so they can cross the message boundary.
@@ -52,46 +50,101 @@
         return autofillRules.find((rule) => ruleMatches(rule, text)) || null;
     }
 
+    const FIELD_SELECTOR =
+        "input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=file]), " +
+        "textarea, select";
+
     // -----------------------------------------------------------------------
-    // Passive mode: annotate known questions with the user's saved answer
+    // Passive mode: offer the user's saved answer beside a matching field
+    //
+    // The scan walks FORM FIELDS and works out what each one is asking, rather
+    // than scanning every text node for something question-shaped. Scanning
+    // text was both noisy and wrong: a job description containing the words
+    // "your name" grew a suggestion box mid-paragraph, and the answer then had
+    // to be matched back to a field by guessing at the nearest one.
     // -----------------------------------------------------------------------
+
+    // What a field is asking, gathered from every place forms put that text.
+    function questionTextFor(field) {
+        const parts = [
+            field.labels?.[0]?.innerText,
+            field.getAttribute("aria-label"),
+            field.getAttribute("placeholder"),
+            field.getAttribute("name"),
+        ];
+
+        const describedBy = field.getAttribute("aria-labelledby");
+        if (describedBy) {
+            describedBy.split(/\s+/).forEach((id) => {
+                parts.push(document.getElementById(id)?.innerText);
+            });
+        }
+
+        // Compliance questions are a paragraph of legal text wrapping a
+        // fieldset, with the actual question at the end.
+        const legend = field.closest("fieldset")?.querySelector("legend");
+        if (legend) parts.push(legend.innerText);
+
+        // Last resort: the immediate container's own text, minus any nested
+        // field values, for forms that use neither <label> nor aria.
+        if (!parts.some(Boolean)) {
+            parts.push(field.parentElement?.innerText);
+        }
+
+        return parts
+            .filter(Boolean)
+            .map((part) => part.trim())
+            .filter((part) => part.length && part.length <= 600)
+            .join(" \n ");
+    }
+
     function scanAndSuggest() {
         if (!autofillRules.length) return;
 
-        document.querySelectorAll("label, legend, h3, h4, p, span").forEach((el) => {
-            if (el.dataset.aiScanned || el.classList.contains("ai-copilot-suggestion")) return;
-            if (el.closest("[data-ai-scanned]")) return;
+        const handledRadioGroups = new Set();
 
-            const text = el.innerText;
-            // Compliance questions are genuinely long — a paragraph of legal
-            // text ending in "have you ever been convicted?" is the norm — so
-            // the cap is generous rather than tight.
-            if (!text || text.length > 600) return;
+        document.querySelectorAll(FIELD_SELECTOR).forEach((field) => {
+            if (field.dataset.aiSuggested) return;
+            // Our own controls must never be treated as form fields to fill.
+            if (field.closest(".ai-copilot-suggestion")) return;
 
-            const rule = findAnswer(text);
+            // A radio group is one question, not one per option.
+            if (field.type === "radio" && field.name) {
+                if (handledRadioGroups.has(field.name)) return;
+                handledRadioGroups.add(field.name);
+            }
+
+            const question = questionTextFor(field);
+            if (!question) return;
+
+            const rule = findAnswer(question);
             if (!rule) return;
 
-            el.insertAdjacentElement("afterend", buildSuggestion(rule));
-            el.dataset.aiScanned = "true";
+            const anchor = field.closest("fieldset") || field;
+            anchor.insertAdjacentElement("afterend", buildSuggestion(rule, field));
+            field.dataset.aiSuggested = "true";
         });
     }
 
-    function buildSuggestion(rule) {
+    // The suggestion deliberately does NOT render the answer.
+    //
+    // A content script shares the DOM with the page, so any text put here is
+    // readable by page scripts. Rendering answers on sight would hand every
+    // page the user's phone number, email, and their disability, ethnicity and
+    // veteran-status responses — without the user doing anything, and to any
+    // site the copilot is enabled on. Only the catalogue's question label is
+    // shown; the value moves from the extension into the field on click, and
+    // is then exactly as exposed as anything else the user typed.
+    function buildSuggestion(rule, field) {
         const box = document.createElement("div");
         box.className = "ai-copilot-suggestion";
 
-        const label = document.createElement("b");
-        label.textContent = "💡 ";
+        const label = document.createElement("span");
+        label.textContent = `💡 Saved answer for “${rule.question}”`;
 
-        // textContent, not innerHTML — answers are user-supplied and must
-        // never be parsed as markup.
-        box.append(label, document.createTextNode(rule.answer));
-
-        // Clicking fills the nearest field rather than making the user retype
-        // an answer the extension is already showing them.
         const apply = document.createElement("button");
         apply.type = "button";
-        apply.textContent = "Use";
+        apply.textContent = "Fill";
         Object.assign(apply.style, {
             all: "initial",
             marginLeft: "8px",
@@ -103,14 +156,14 @@
             fontSize: "11px",
             cursor: "pointer"
         });
+
         apply.addEventListener("click", (event) => {
             event.preventDefault();
             event.stopPropagation();
-            const filled = fillNearestField(box, rule.answer);
-            apply.textContent = filled ? "Filled" : "No field found";
+            apply.textContent = fillField(field, rule.answer) ? "Filled" : "Could not fill";
         });
 
-        box.appendChild(apply);
+        box.append(label, apply);
 
         Object.assign(box.style, {
             all: "initial",
@@ -131,47 +184,44 @@
         return box;
     }
 
-    const FIELD_SELECTOR =
-        "input:not([type=hidden]):not([type=submit]):not([type=button]), textarea, select";
-
-    // Fills the field the suggestion belongs to. Never runs on its own — only
-    // from a click, because silently populating a form the user is about to
+    // Fills one specific field — the one the suggestion was built for, so
+    // there is no guessing at which control an answer belongs to. Only ever
+    // called from a click: silently populating a form the user is about to
     // submit is not something to do on their behalf.
-    function fillNearestField(anchor, value) {
-        // Search must start ABOVE the suggestion box: closest() includes the
-        // element itself, and the box is a <div>, so starting at it returns
-        // the box — which contains no form field but its own button.
-        //
-        // Walking outwards a few levels handles the nesting real forms use,
-        // where the label and its input are cousins rather than siblings.
-        let scope = anchor.parentElement;
-        let field = null;
-
-        for (let depth = 0; scope && depth < 4; depth += 1) {
-            field = scope.querySelector(FIELD_SELECTOR);
-            if (field) break;
-            scope = scope.parentElement;
-        }
-
-        if (!field || !scope) return false;
+    function fillField(field, value) {
+        const wanted = value.trim().toLowerCase();
 
         if (field.tagName === "SELECT") {
             const option = Array.from(field.options).find(
                 (candidate) =>
-                    candidate.text.trim().toLowerCase() === value.trim().toLowerCase() ||
-                    candidate.value.trim().toLowerCase() === value.trim().toLowerCase()
+                    candidate.text.trim().toLowerCase() === wanted ||
+                    candidate.value.trim().toLowerCase() === wanted
             );
             if (!option) return false;
             field.value = option.value;
         } else if (field.type === "radio" || field.type === "checkbox") {
-            const radios = scope.querySelectorAll(`input[type="${field.type}"]`);
-            const wanted = Array.from(radios).find((candidate) => {
-                const label = candidate.labels?.[0]?.innerText || candidate.value || "";
-                return label.trim().toLowerCase() === value.trim().toLowerCase();
+            // Filtered in JS rather than built into a selector: a name
+            // containing a quote or bracket would need escaping, and CSS.escape
+            // is not available everywhere this runs.
+            const group = field.name
+                ? Array.from(
+                      document.querySelectorAll(`input[type="${field.type}"]`)
+                  ).filter((candidate) => candidate.name === field.name)
+                : [field];
+
+            const target = group.find((candidate) => {
+                const text =
+                    candidate.labels?.[0]?.innerText ||
+                    candidate.getAttribute("aria-label") ||
+                    candidate.value ||
+                    "";
+                return text.trim().toLowerCase() === wanted;
             });
-            if (!wanted) return false;
-            wanted.checked = true;
-            wanted.dispatchEvent(new Event("change", { bubbles: true }));
+
+            if (!target) return false;
+
+            target.checked = true;
+            target.dispatchEvent(new Event("change", { bubbles: true }));
             return true;
         } else {
             field.value = value;

@@ -91,8 +91,8 @@ function suggestions(w) {
     const { w } = build(`<div><label for="n">First Name</label><input id="n"></div>`);
     await settle();
     const boxes = suggestions(w);
-    check("a labelled field shows the saved answer",
-      boxes.length === 1 && boxes[0].textContent.includes("Priya"),
+    check("a labelled field offers its saved answer",
+      boxes.length === 1 && boxes[0].textContent.includes("First name"),
       `got ${boxes.length} box(es): ${boxes.map(b => b.textContent).join(" | ")}`);
   }
 
@@ -100,9 +100,11 @@ function suggestions(w) {
   {
     const { w } = build(`<div><label for="n">First Name</label><input id="n"></div>`);
     await settle();
+    // The box names the catalogue question it matched, so specificity is
+    // visible without the value ever entering the DOM.
     const text = suggestions(w)[0]?.textContent || "";
     check("first name beats full name",
-      text.includes("Priya") && !text.includes("Priya Sharma"), `got: ${text}`);
+      text.includes("First name") && !text.includes("Full name"), `got: ${text}`);
   }
 
   // ---- authorisation and sponsorship stay distinct --------------------
@@ -113,9 +115,17 @@ function suggestions(w) {
     `);
     await settle();
     const texts = suggestions(w).map(b => b.textContent);
-    check("authorisation and sponsorship get opposite answers",
-      texts.length === 2 && texts[0].includes("Yes") && texts[1].includes("No"),
+    check("authorisation and sponsorship match different questions",
+      texts.length === 2 &&
+        texts[0].includes("Authorized to work") &&
+        texts[1].includes("Need sponsorship"),
       `got: ${JSON.stringify(texts)}`);
+    // Filling both proves they carry opposite values.
+    suggestions(w).forEach(b => b.querySelector("button").click());
+    check("authorisation and sponsorship fill opposite values",
+      w.document.querySelector("#a").value === "Yes" &&
+        w.document.querySelector("#b").value === "No",
+      `a=${w.document.querySelector("#a").value} b=${w.document.querySelector("#b").value}`);
   }
 
   // ---- a compliance question buried in legal text ---------------------
@@ -128,7 +138,7 @@ function suggestions(w) {
     `);
     await settle();
     check("a paragraph-long compliance question still matches",
-      suggestions(w).some(b => b.textContent.includes("No")),
+      suggestions(w).some(b => b.textContent.includes("Convicted of a crime")),
       `got ${suggestions(w).length} suggestion(s)`);
   }
 
@@ -139,7 +149,8 @@ function suggestions(w) {
     );
     await settle();
     check("a custom question with regex characters matches literally",
-      suggestions(w).some(b => b.textContent.includes("Yes")));
+      suggestions(w).some(b => b.textContent.includes("Driving licence")),
+      `got: ${suggestions(w).map(b => b.textContent).join(" | ")}`);
   }
 
   // ---- nothing is filled without a click ------------------------------
@@ -156,7 +167,7 @@ function suggestions(w) {
     const { w } = build(`<div><label for="n">First Name</label><input id="n"></div>`);
     await settle();
     suggestions(w)[0].querySelector("button").click();
-    check("clicking Use fills the text input",
+    check("clicking Fill fills the text input",
       w.document.querySelector("#n").value === "Priya",
       `value was ${JSON.stringify(w.document.querySelector("#n").value)}`);
   }
@@ -173,12 +184,12 @@ function suggestions(w) {
       </div>`);
     await settle();
     suggestions(w)[0].querySelector("button").click();
-    check("clicking Use selects the matching option",
+    check("clicking Fill selects the matching option",
       w.document.querySelector("#g").value === "x",
       `value was ${JSON.stringify(w.document.querySelector("#g").value)}`);
   }
 
-  // ---- clicking Use checks the matching radio -------------------------
+  // ---- clicking Fill checks the matching radio -------------------------
   {
     const { w } = build(`
       <fieldset>
@@ -191,10 +202,69 @@ function suggestions(w) {
     check("a legend is scanned as a question", !!box, "no suggestion rendered");
     if (box) {
       box.querySelector("button").click();
-      check("clicking Use checks the matching radio",
+      check("clicking Fill checks the matching radio",
         w.document.querySelector("#y").checked === true,
         `Yes checked=${w.document.querySelector("#y").checked}`);
     }
+  }
+
+  // ---- the answer must never reach the page DOM ------------------------
+  // A content script shares the DOM with the page. Rendering answers on sight
+  // would hand any page the user's phone, email, and their disability,
+  // ethnicity and veteran-status responses with no interaction at all — and a
+  // hostile page could harvest them by planting labels like "Phone number".
+  {
+    const { w } = build(`
+      <div><label for="a">First Name</label><input id="a"></div>
+      <div><label for="b">Gender</label><input id="b"></div>
+      <div><label for="c">Have you been convicted of a crime?</label><input id="c"></div>
+    `);
+    await settle();
+
+    const pageText = w.document.body.innerText;
+    const leaked = ["Priya", "I prefer not to say"]
+      .filter(v => pageText.includes(v));
+
+    check("no answer value is rendered into the page",
+      leaked.length === 0, `leaked: ${JSON.stringify(leaked)}`);
+
+    check("suggestions are still offered for all three",
+      suggestions(w).length === 3, `got ${suggestions(w).length}`);
+
+    // The value appears only after a click, in the field itself.
+    suggestions(w)[0].querySelector("button").click();
+    check("the value appears only once the user clicks",
+      w.document.querySelector("#a").value === "Priya");
+  }
+
+  // ---- prose must not grow suggestion boxes ----------------------------
+  // Scanning text nodes put a box mid-paragraph whenever a job description
+  // happened to contain words like "your name".
+  {
+    const { w } = build(`
+      <main>
+        <p>We are hiring an AI Engineer. Please include your name and a note on
+        your notice period, and tell us about your gender-diverse team work.</p>
+        <span>Send your email address to the hiring team.</span>
+      </main>`);
+    await settle();
+    check("a job description grows no suggestion boxes",
+      suggestions(w).length === 0,
+      `got ${suggestions(w).length}: ${suggestions(w).map(b => b.textContent).join(" | ")}`);
+  }
+
+  // ---- a radio group is one question, not one per option ----------------
+  {
+    const { w } = build(`
+      <fieldset>
+        <legend>Are you legally authorized to work in the US?</legend>
+        <input type="radio" name="auth" id="y" value="Yes"><label for="y">Yes</label>
+        <input type="radio" name="auth" id="n2" value="No"><label for="n2">No</label>
+        <input type="radio" name="auth" id="n3" value="Decline"><label for="n3">Decline</label>
+      </fieldset>`);
+    await settle();
+    check("a radio group gets exactly one suggestion",
+      suggestions(w).length === 1, `got ${suggestions(w).length}`);
   }
 
   // ---- an unknown question produces nothing ---------------------------

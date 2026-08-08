@@ -7,9 +7,12 @@
 //   2. Requests originate from the extension's own chrome-extension:// origin,
 //      which is the only origin the API's CORS policy accepts.
 
-// Where the API lives. Overridable from the popup so the same extension works
-// against a local server or a hosted deployment.
-const DEFAULT_API_URL = "http://localhost:8000";
+// Where the API lives.
+//
+// Defaults to the hosted deployment so an installed extension works with no
+// configuration. Overridable from the popup's Settings panel, which is what
+// developers point at http://localhost:8000 when running the API locally.
+const DEFAULT_API_URL = "https://katchjobs.online";
 
 // The API's /health endpoint reports this. Anything else on the address is a
 // different application, which is worth saying out loud.
@@ -38,6 +41,10 @@ async function getToken() {
 
 async function setSession(token, email) {
     await chrome.storage.local.set({ authToken: token, userEmail: email });
+    // Signing in is an account change. Without this, a sign-in that followed
+    // an expired session would serve the previous account's saved answers
+    // until the cache happened to age out.
+    autofillCache = { rules: false, data: null, at: 0 };
 }
 
 async function clearSession() {

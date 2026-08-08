@@ -233,7 +233,9 @@ class SaveAnswerRequest(BaseModel):
 
 
 class AutofillAnswersRequest(BaseModel):
-    answers: dict[str, str] = Field(default_factory=dict)
+    # Capped so a caller cannot post an arbitrarily large map. Unknown keys are
+    # discarded by set_answers anyway, but the body is parsed before that.
+    answers: dict[str, str] = Field(default_factory=dict, max_length=200)
 
 
 class CustomAnswerRequest(BaseModel):
