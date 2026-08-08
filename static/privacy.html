@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy — Talent Pilot</title>
+<style>
+  :root { --ink:#1f2328; --muted:#5b6570; --accent:#0073b1; --border:#e3e7ec; --bg:#fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink:#e6e9ee; --muted:#a3adb8; --accent:#5cb3e8; --border:#2b3138; --bg:#14171a; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2.5rem 1.25rem 5rem;
+    background: var(--bg); color: var(--ink);
+    font: 16px/1.65 -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  }
+  main { max-width: 46rem; margin: 0 auto; }
+  h1 { font-size: 1.9rem; margin: 0 0 .35rem; letter-spacing: -.02em; }
+  h2 {
+    font-size: 1.15rem; margin: 2.4rem 0 .7rem; padding-bottom: .35rem;
+    border-bottom: 1px solid var(--border);
+  }
+  h3 { font-size: 1rem; margin: 1.5rem 0 .4rem; }
+  p, li { color: var(--ink); }
+  .lede { color: var(--muted); margin: 0 0 .25rem; }
+  .updated { color: var(--muted); font-size: .875rem; margin: 0 0 2rem; }
+  a { color: var(--accent); }
+  ul { padding-left: 1.25rem; }
+  li { margin: .3rem 0; }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: .93rem; }
+  th, td { text-align: left; padding: .55rem .6rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-weight: 600; }
+  .wrap { overflow-x: auto; }
+  .callout {
+    border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    border-radius: 6px; padding: .85rem 1rem; margin: 1.25rem 0;
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+  }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: .9em; }
+  footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); color: var(--muted); font-size: .875rem; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Privacy Policy</h1>
+<p class="lede">Talent Pilot — job application tracker and browser extension</p>
+<p class="updated">Last updated: 8 August 2026</p>
+
+<p>
+  Talent Pilot is a personal job-application tracker. It consists of a website at
+  <a href="https://katchjobs.online">katchjobs.online</a> and a Chrome extension,
+  which share one account. This policy explains exactly what the service stores,
+  why, and how to get rid of it.
+</p>
+
+<p>
+  Talent Pilot is operated by an individual developer, not a company. There is no
+  advertising, no analytics, and no tracking of any kind. Your data is never sold,
+  rented, or shared for marketing.
+</p>
+
+<h2>What is collected</h2>
+
+<div class="wrap">
+<table>
+  <thead>
+    <tr><th>Data</th><th>Where it comes from</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Email address and password</td>
+      <td>You, at sign-up</td>
+      <td>To create and sign you into your account. Passwords are stored only as a
+          PBKDF2-HMAC-SHA256 hash with a per-account salt — never in readable form.</td>
+    </tr>
+    <tr>
+      <td>Resume contents — name, email, phone, location, work history, education, skills</td>
+      <td>The PDF you upload</td>
+      <td>To score job descriptions against your background and to pre-fill your
+          application answers.</td>
+    </tr>
+    <tr>
+      <td>Application answers — including salary expectations, notice period, work
+          authorisation, and any equal-opportunity responses you choose to give
+          (gender, ethnicity, veteran and disability status)</td>
+      <td>You, in the questionnaire</td>
+      <td>So the extension can offer them back to you when a form asks. Every one of
+          these is optional; leave any blank and it is simply never suggested.</td>
+    </tr>
+    <tr>
+      <td>Job postings you save — company, role, job description, and the page URL</td>
+      <td>The job page, when you click Save</td>
+      <td>To build your application tracker.</td>
+    </tr>
+    <tr>
+      <td>Gmail message metadata and body text — sender, subject, and content of
+          recruiting emails</td>
+      <td>Your Gmail account, only if you connect it</td>
+      <td>To work out which application an email is about and update its status.</td>
+    </tr>
+    <tr>
+      <td>IP address and sign-in attempts</td>
+      <td>Your browser, at sign-in</td>
+      <td>Rate limiting, to stop password guessing. Not used for anything else.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h3>What the extension stores in your browser</h3>
+<p>
+  Only four things, all in Chrome's local extension storage: your sign-in token,
+  your email address, the server address you are pointed at, and the name of your
+  selected resume profile. Answers you generate with AI are also cached locally so
+  the same question is not paid for twice. Your saved answers and tracked
+  applications are <em>not</em> stored in the extension — they live in your account.
+</p>
+
+<h3>What is never collected</h3>
+<ul>
+  <li>Your browsing history. The extension reads a page only on the job sites listed
+      in its manifest, or on a site you have explicitly granted it access to.</li>
+  <li>Keystrokes, mouse movement, scrolling, or any behavioural analytics.</li>
+  <li>Payment or card details. The service is free and has no payment processing.</li>
+  <li>Anything from a page you have not asked the extension to work on.</li>
+</ul>
+
+<h2>Google user data and the Gmail connection</h2>
+
+<p>
+  Connecting Gmail is entirely optional; the rest of Talent Pilot works without it.
+  If you connect it, Talent Pilot requests a single scope:
+</p>
+
+<p><code>https://www.googleapis.com/auth/gmail.readonly</code></p>
+
+<p>
+  This grants read-only access. Talent Pilot <strong>cannot</strong> send, delete,
+  or modify any message. It searches only recent mail matching recruiting-related
+  terms, reads the sender, subject and body text of those messages, and uses them
+  to update the status of applications you are already tracking.
+</p>
+
+<div class="callout">
+  <strong>Limited Use disclosure.</strong> Talent Pilot's use and transfer of
+  information received from Google APIs adheres to the
+  <a href="https://developers.google.com/terms/api-services-user-data-policy">Google
+  API Services User Data Policy</a>, including its Limited Use requirements.
+  Specifically: Google user data is used only to provide and improve the
+  application-tracking features you can see in the app; it is never sold; it is
+  never transferred to others except as needed to provide those features, for
+  security purposes, or to comply with applicable law; and it is never used for
+  advertising. No human reads your Google user data except where you have given
+  explicit consent, for security purposes, or to comply with applicable law.
+</div>
+
+<p>
+  Your Gmail authorisation token is stored in your own workspace on the server and
+  is used only to make requests on your behalf. You can disconnect Gmail at any
+  time from the dashboard sidebar, which deletes that token. You can also revoke
+  access from your
+  <a href="https://myaccount.google.com/permissions">Google Account permissions</a>
+  page.
+</p>
+
+<h2>AI processing</h2>
+
+<p>
+  Talent Pilot uses Google's Gemini API for four things: turning your uploaded
+  resume into structured data, comparing a job description against it, drafting
+  answers to application questions, and classifying recruiting emails.
+</p>
+
+<p>
+  The relevant text is sent to Google for processing and the result is returned.
+  Requests are made under a paid-tier-eligible developer API key. Google does not
+  use data submitted through the Gemini API to train its models, per the
+  <a href="https://ai.google.dev/gemini-api/terms">Gemini API Additional Terms of
+  Service</a>. Talent Pilot sends only what is needed for each task and never
+  transmits your password.
+</p>
+
+<h2>Where your data is stored</h2>
+
+<p>
+  On a single virtual machine hosted with Google Cloud Platform in the United
+  States. Every account has its own isolated database file, keyed by an internal
+  account number. Traffic is encrypted in transit with HTTPS (TLS certificates
+  from Let's Encrypt). Backups are taken nightly and kept for 14 days.
+</p>
+
+<p>
+  Sign-in tokens are stored as SHA-256 digests, so a copy of the database does not
+  grant anyone a live session. Changing your password revokes every existing
+  session.
+</p>
+
+<h2>Sharing</h2>
+
+<p>Your data is shared with exactly three parties, all of them infrastructure:</p>
+
+<ul>
+  <li><strong>Google Cloud Platform</strong> — hosts the server the service runs on.</li>
+  <li><strong>Google Gemini API</strong> — performs the AI processing described above.</li>
+  <li><strong>Google Gmail API</strong> — only if you connect Gmail.</li>
+</ul>
+
+<p>
+  There are no other recipients. Data is never sold, never rented, never used to
+  determine creditworthiness or for lending, and never used for any purpose
+  unrelated to running Talent Pilot.
+</p>
+
+<h2>Retention and deletion</h2>
+
+<p>
+  Your data is kept for as long as your account exists. You can remove most of it
+  yourself at any time: delete individual applications and resume profiles from the
+  dashboard, clear any saved answer from the Application answers tab, and
+  disconnect Gmail from the sidebar.
+</p>
+
+<p>
+  To delete your account and everything in it, email the address below. Everything
+  is removed within 30 days, including from backups as they age out of the 14-day
+  window. Uninstalling the extension removes what it kept in your browser but does
+  not delete your account.
+</p>
+
+<h2>Your rights</h2>
+
+<p>
+  Depending on where you live, you may have the right to access, correct, export,
+  or delete your personal data, and to withdraw consent. Talent Pilot honours all
+  of these regardless of jurisdiction — email the address below and it will be
+  handled.
+</p>
+
+<h2>Children</h2>
+
+<p>
+  Talent Pilot is not intended for anyone under 16, and data is not knowingly
+  collected from them.
+</p>
+
+<h2>Changes</h2>
+
+<p>
+  If this policy changes materially, the date at the top will be updated and a
+  notice will be shown in the dashboard. Continuing to use the service after that
+  means accepting the revised policy.
+</p>
+
+<h2>Contact</h2>
+
+<p>
+  Questions, deletion requests, or anything else about privacy:
+  <a href="mailto:anipy2000@gmail.com">anipy2000@gmail.com</a>
+</p>
+
+<footer>
+  Talent Pilot · <a href="https://katchjobs.online">katchjobs.online</a>
+</footer>
+
+</main>
+</body>
+</html>

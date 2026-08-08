@@ -15,7 +15,7 @@ YOUR_DOMAIN {
 	# does not 404 — it falls through to the dashboard, which answers 200 with
 	# an HTML page, so the extension sees a success it cannot parse. That is a
 	# much harder failure to read than a 404.
-	@api path /health* /auth/* /jobs* /profiles* /check-job* /save-job* /analyze-job* /generate-answer* /save-answer* /autofill* /docs* /openapi.json
+	@api path /health* /auth/* /jobs* /profiles* /check-job* /save-job* /analyze-job* /generate-answer* /save-answer* /autofill* /privacy* /docs* /openapi.json
 	handle @api {
 		reverse_proxy 127.0.0.1:8000
 	}
@@ -62,7 +62,7 @@ YOUR_DOMAIN {
 	# does not 404 — it falls through to the dashboard, which answers 200 with
 	# an HTML page, so the extension sees a success it cannot parse. That is a
 	# much harder failure to read than a 404.
-	@api path /health* /auth/* /jobs* /profiles* /check-job* /save-job* /analyze-job* /generate-answer* /save-answer* /autofill* /docs* /openapi.json
+	@api path /health* /auth/* /jobs* /profiles* /check-job* /save-job* /analyze-job* /generate-answer* /save-answer* /autofill* /privacy* /docs* /openapi.json
 # 	handle @api {
 # 		reverse_proxy 127.0.0.1:8000
 # 	}

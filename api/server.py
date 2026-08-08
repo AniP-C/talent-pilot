@@ -24,7 +24,7 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
 
@@ -271,6 +271,26 @@ def health() -> dict:
             "invite_required": bool(SIGNUP_CODE),
         },
     }
+
+
+# =====================================================================
+# PRIVACY POLICY
+# =====================================================================
+# Served by the API rather than the dashboard because Streamlit renders inside
+# its own app shell and cannot return a plain document at a fixed URL. The
+# Chrome Web Store listing points here, and a reviewer must be able to load it
+# without an account, so it is deliberately unauthenticated.
+_PRIVACY_PAGE = Path(__file__).resolve().parent.parent / "static" / "privacy.html"
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy_policy() -> HTMLResponse:
+    """The published privacy policy. Public by design."""
+    try:
+        return HTMLResponse(_PRIVACY_PAGE.read_text(encoding="utf-8"))
+    except OSError:
+        logger.error("Privacy policy missing at %s", _PRIVACY_PAGE)
+        raise HTTPException(status_code=500, detail="Privacy policy unavailable.") from None
 
 
 # =====================================================================

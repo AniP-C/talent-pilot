@@ -340,3 +340,23 @@ def test_a_long_essay_is_not_added_to_the_bank(account, monkeypatch):
 
     assert response.json()["reusable"] is False
     assert client.get("/autofill", headers=account["headers"]).json()["rules"] == []
+
+
+def test_privacy_policy_is_public():
+    """The Chrome Web Store listing links here and a reviewer has no account,
+    so it must load without authentication."""
+    response = client.get("/privacy")
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+
+
+def test_privacy_policy_covers_what_the_store_requires():
+    body = client.get("/privacy").text
+
+    # The Limited Use wording is mandatory for a Gmail scope.
+    assert "Limited Use" in body
+    assert "gmail.readonly" in body
+    # Deletion route and a contact address are both required disclosures.
+    assert "delete your account" in body.lower()
+    assert "@" in body
