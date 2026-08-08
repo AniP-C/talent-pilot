@@ -17,9 +17,6 @@ data/*
 !data/.gitkeep
 !data/README.md
 
-# Local Chrome extension autofill profile
-extension/rules.js
-
 # Logs and runtime state
 logs/*
 !logs/.gitkeep

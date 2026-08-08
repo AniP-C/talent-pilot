@@ -42,7 +42,18 @@ async function setSession(token, email) {
 
 async function clearSession() {
     await chrome.storage.local.remove(["authToken", "userEmail"]);
+    // One account's saved answers must never be served to the next person to
+    // sign in on this browser.
+    autofillCache = { rules: false, data: null, at: 0 };
 }
+
+// ---------------------------------------------------------------------------
+// Autofill answer cache
+// ---------------------------------------------------------------------------
+// A content script asks for the user's answers on every page load, and they
+// change rarely. Without this, opening ten job tabs is ten identical requests.
+const AUTOFILL_TTL_MS = 5 * 60 * 1000;
+let autofillCache = { rules: false, data: null, at: 0 };
 
 // ---------------------------------------------------------------------------
 // HTTP
@@ -298,6 +309,36 @@ const handlers = {
 
     SAVE_ANSWER({ question, answer }) {
         return apiRequest("/save-answer", { method: "POST", body: { question, answer } });
+    },
+
+    // The user's saved application-form answers. Cached because a content
+    // script asks for these on every page load and they change rarely; without
+    // it, opening ten job tabs would be ten identical round trips.
+    async GET_AUTOFILL({ force = false } = {}) {
+        const now = Date.now();
+
+        if (!force && autofillCache.rules && now - autofillCache.at < AUTOFILL_TTL_MS) {
+            return { ok: true, data: autofillCache.data };
+        }
+
+        const response = await apiRequest("/autofill");
+
+        if (response.ok) {
+            autofillCache = { rules: true, data: response.data, at: now };
+        }
+
+        return response;
+    },
+
+    // Saves an AI-drafted answer so the same question is instant next time.
+    SAVE_CUSTOM_ANSWER({ question, answer }) {
+        // Any write invalidates the cache, or the new answer would not be
+        // suggested until the TTL happened to expire.
+        autofillCache = { rules: false, data: null, at: 0 };
+        return apiRequest("/autofill/custom", {
+            method: "POST",
+            body: { question, answer }
+        });
     }
 };
 

@@ -59,6 +59,15 @@ def last_sync_path(user_id: int) -> Path:
     return workspace_dir(user_id) / "last_sync.txt"
 
 
+def autofill_path(user_id: int) -> Path:
+    """Where this user's application-form answers live.
+
+    Replaces the old extension/rules.js, which baked one person's name, phone
+    and email into the extension itself.
+    """
+    return workspace_dir(user_id) / "autofill.json"
+
+
 def sanitize_filename(name: str, default: str = "profile") -> str:
     """Reduce arbitrary user input to a safe, flat filename stem.
 

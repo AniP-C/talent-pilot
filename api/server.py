@@ -31,6 +31,7 @@ from pydantic import BaseModel, EmailStr, Field
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import auth
+import autofill
 import db
 import job_fields
 import utils
@@ -229,6 +230,15 @@ class AnswerRequest(BaseModel):
 class SaveAnswerRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     answer: str = Field(min_length=1, max_length=20_000)
+
+
+class AutofillAnswersRequest(BaseModel):
+    answers: dict[str, str] = Field(default_factory=dict)
+
+
+class CustomAnswerRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    answer: str = Field(min_length=1, max_length=2000)
 
 
 class StatusUpdateRequest(BaseModel):
@@ -438,12 +448,19 @@ async def upload_profile(
         raise HTTPException(status_code=502, detail=structured["message"])
 
     filename = utils.save_profile(user.id, name, structured)
+
+    # Pre-fill the questionnaire from what the resume already says, so the user
+    # confirms a mostly-complete form instead of typing their own phone number
+    # in again. Existing answers are never overwritten.
+    autofill.seed_from_resume(user.id, structured)
+
     logger.info("Profile %s uploaded via extension by user %s", filename, user.id)
 
     return {
         "message": "Profile created.",
         "filename": filename,
         "label": utils.profile_display_name(filename),
+        "setup": autofill.completeness(user.id),
     }
 
 
@@ -569,7 +586,75 @@ def generate_answer(req: AnswerRequest, user: auth.User = Depends(current_user))
 @app.post("/save-answer")
 def save_answer(req: SaveAnswerRequest, user: auth.User = Depends(current_user)) -> dict:
     filename = save_answer_to_memory(user.id, req.question, req.answer)
-    return {"message": "Saved to your memory bank.", "file": filename}
+
+    # Short answers also join the autofill bank, so a question answered once
+    # with AI is suggested instantly — and for free — the next time it appears.
+    # Long-form essays are deliberately excluded: they are tailored per
+    # application, and replaying one verbatim would be worse than redrafting.
+    saved_for_autofill = False
+    if len(req.answer) <= autofill.MAX_ANSWER_LENGTH:
+        try:
+            autofill.add_custom(user.id, req.question, req.answer)
+            saved_for_autofill = True
+        except ValueError as exc:
+            logger.info("Not adding answer to autofill for user %s: %s", user.id, exc)
+
+    return {
+        "message": "Saved to your memory bank.",
+        "file": filename,
+        "reusable": saved_for_autofill,
+    }
+
+
+# =====================================================================
+# AUTOFILL ANSWER BANK
+# =====================================================================
+@app.get("/autofill")
+def get_autofill(user: auth.User = Depends(current_user)) -> dict:
+    """Matching rules for the signed-in user, consumed by the content script.
+
+    This is what replaced the bundled rules.js. The extension holds no personal
+    data of its own; it asks for the current user's answers on demand, so one
+    build serves everybody.
+    """
+    return {
+        "rules": autofill.build_rules(user.id),
+        "completeness": autofill.completeness(user.id),
+    }
+
+
+@app.get("/autofill/questions")
+def get_autofill_questions(user: auth.User = Depends(current_user)) -> dict:
+    """The catalogue plus the user's current answers, for the setup screen."""
+    bank = autofill.load(user.id)
+
+    return {
+        "groups": autofill.GROUPS,
+        "fields": [field.as_dict() for field in autofill.FIELDS],
+        "answers": bank["answers"],
+        "custom": bank["custom"],
+        "completeness": autofill.completeness(user.id),
+    }
+
+
+@app.post("/autofill/answers")
+def save_autofill_answers(
+    req: AutofillAnswersRequest, user: auth.User = Depends(current_user)
+) -> dict:
+    autofill.set_answers(user.id, req.answers)
+    return {"message": "Answers saved.", "completeness": autofill.completeness(user.id)}
+
+
+@app.post("/autofill/custom", status_code=201)
+def add_autofill_custom(
+    req: CustomAnswerRequest, user: auth.User = Depends(current_user)
+) -> dict:
+    try:
+        autofill.add_custom(user.id, req.question, req.answer)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"message": "Saved.", "completeness": autofill.completeness(user.id)}
 
 
 # =====================================================================

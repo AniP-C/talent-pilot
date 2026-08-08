@@ -24,7 +24,7 @@
         "https://*.ashbyhq.com/*",
         "https://*.workable.com/*"
       ],
-      "js": ["rules.js", "content.js"],
+      "js": ["content.js"],
       "run_at": "document_idle"
     }
   ]

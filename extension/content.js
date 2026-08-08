@@ -8,36 +8,109 @@
     "use strict";
 
     // -----------------------------------------------------------------------
-    // Passive mode: annotate known questions with a saved suggestion
+    // The signed-in user's saved answers
+    //
+    // These used to live in a bundled rules.js holding one person's real name,
+    // phone number and email — which meant the extension could only ever be
+    // used by whoever built it. They now come from the API, scoped to whoever
+    // is signed in, so one published build serves everybody.
+    // -----------------------------------------------------------------------
+    let autofillRules = [];
+    let rulesLoaded = false;
+
+    async function loadAutofillRules() {
+        try {
+            const response = await chrome.runtime.sendMessage({ type: "GET_AUTOFILL" });
+            autofillRules = response?.ok ? response.data.rules || [] : [];
+        } catch {
+            // Not signed in, or the service worker is asleep. Suggestions are
+            // an enhancement; the page must keep working without them.
+            autofillRules = [];
+        }
+        rulesLoaded = true;
+    }
+
+    // Patterns arrive as strings so they can cross the message boundary.
+    // Catalogue entries are curated regexes; a user's own question is matched
+    // literally, so typing "(" into it cannot produce a broken pattern.
+    function ruleMatches(rule, text) {
+        return rule.patterns.some((pattern) => {
+            if (rule.literal) {
+                return text.toLowerCase().includes(pattern.toLowerCase());
+            }
+            try {
+                return new RegExp(pattern, "i").test(text);
+            } catch {
+                return false;
+            }
+        });
+    }
+
+    // Order is significant and set by the server: "first name" is tested
+    // before "name", or every name field fills with the full name.
+    function findAnswer(text) {
+        return autofillRules.find((rule) => ruleMatches(rule, text)) || null;
+    }
+
+    // -----------------------------------------------------------------------
+    // Passive mode: annotate known questions with the user's saved answer
     // -----------------------------------------------------------------------
     function scanAndSuggest() {
-        if (typeof AUTOFILL_RULES === "undefined") return;
+        if (!autofillRules.length) return;
 
-        document.querySelectorAll("label, h3, span").forEach((el) => {
+        document.querySelectorAll("label, legend, h3, h4, p, span").forEach((el) => {
             if (el.dataset.aiScanned || el.classList.contains("ai-copilot-suggestion")) return;
             if (el.closest("[data-ai-scanned]")) return;
 
             const text = el.innerText;
-            if (!text || text.length > 300) return;
+            // Compliance questions are genuinely long — a paragraph of legal
+            // text ending in "have you ever been convicted?" is the norm — so
+            // the cap is generous rather than tight.
+            if (!text || text.length > 600) return;
 
-            const rule = AUTOFILL_RULES.find((candidate) => candidate.pattern.test(text));
+            const rule = findAnswer(text);
             if (!rule) return;
 
-            el.insertAdjacentElement("afterend", buildSuggestion(rule.suggestion));
+            el.insertAdjacentElement("afterend", buildSuggestion(rule));
             el.dataset.aiScanned = "true";
         });
     }
 
-    function buildSuggestion(text) {
+    function buildSuggestion(rule) {
         const box = document.createElement("div");
         box.className = "ai-copilot-suggestion";
 
         const label = document.createElement("b");
-        label.textContent = "💡 Suggestion: ";
+        label.textContent = "💡 ";
 
-        // textContent, not innerHTML — rule values are user-editable and must
+        // textContent, not innerHTML — answers are user-supplied and must
         // never be parsed as markup.
-        box.append(label, document.createTextNode(text));
+        box.append(label, document.createTextNode(rule.answer));
+
+        // Clicking fills the nearest field rather than making the user retype
+        // an answer the extension is already showing them.
+        const apply = document.createElement("button");
+        apply.type = "button";
+        apply.textContent = "Use";
+        Object.assign(apply.style, {
+            all: "initial",
+            marginLeft: "8px",
+            padding: "1px 7px",
+            backgroundColor: "#0056b3",
+            color: "#fff",
+            borderRadius: "4px",
+            fontFamily: "Arial, sans-serif",
+            fontSize: "11px",
+            cursor: "pointer"
+        });
+        apply.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const filled = fillNearestField(box, rule.answer);
+            apply.textContent = filled ? "Filled" : "No field found";
+        });
+
+        box.appendChild(apply);
 
         Object.assign(box.style, {
             all: "initial",
@@ -51,10 +124,64 @@
             borderRadius: "6px",
             fontSize: "12px",
             width: "max-content",
+            maxWidth: "100%",
             boxShadow: "0 2px 4px rgba(0,0,0,0.05)"
         });
 
         return box;
+    }
+
+    const FIELD_SELECTOR =
+        "input:not([type=hidden]):not([type=submit]):not([type=button]), textarea, select";
+
+    // Fills the field the suggestion belongs to. Never runs on its own — only
+    // from a click, because silently populating a form the user is about to
+    // submit is not something to do on their behalf.
+    function fillNearestField(anchor, value) {
+        // Search must start ABOVE the suggestion box: closest() includes the
+        // element itself, and the box is a <div>, so starting at it returns
+        // the box — which contains no form field but its own button.
+        //
+        // Walking outwards a few levels handles the nesting real forms use,
+        // where the label and its input are cousins rather than siblings.
+        let scope = anchor.parentElement;
+        let field = null;
+
+        for (let depth = 0; scope && depth < 4; depth += 1) {
+            field = scope.querySelector(FIELD_SELECTOR);
+            if (field) break;
+            scope = scope.parentElement;
+        }
+
+        if (!field || !scope) return false;
+
+        if (field.tagName === "SELECT") {
+            const option = Array.from(field.options).find(
+                (candidate) =>
+                    candidate.text.trim().toLowerCase() === value.trim().toLowerCase() ||
+                    candidate.value.trim().toLowerCase() === value.trim().toLowerCase()
+            );
+            if (!option) return false;
+            field.value = option.value;
+        } else if (field.type === "radio" || field.type === "checkbox") {
+            const radios = scope.querySelectorAll(`input[type="${field.type}"]`);
+            const wanted = Array.from(radios).find((candidate) => {
+                const label = candidate.labels?.[0]?.innerText || candidate.value || "";
+                return label.trim().toLowerCase() === value.trim().toLowerCase();
+            });
+            if (!wanted) return false;
+            wanted.checked = true;
+            wanted.dispatchEvent(new Event("change", { bubbles: true }));
+            return true;
+        } else {
+            field.value = value;
+        }
+
+        // React-based forms track state internally and ignore a raw .value
+        // assignment unless these follow it.
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+        field.dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
     }
 
     // -----------------------------------------------------------------------
@@ -114,6 +241,15 @@
         button.disabled = true;
         button.textContent = "⏳ Checking…";
 
+        // A previously saved answer costs nothing and is what the user already
+        // decided to say. Checked before both the local cache and the model.
+        const saved = findAnswer(question);
+        if (saved) {
+            applyAnswer(textarea, saved.answer);
+            finish(button, "✅ Your saved answer", "#28a745");
+            return;
+        }
+
         const cached = await chrome.storage.local.get(cacheKey);
         if (cached[cacheKey]) {
             applyAnswer(textarea, cached[cacheKey]);
@@ -139,8 +275,23 @@
             return;
         }
 
-        applyAnswer(textarea, response.data.suggested_answer);
-        chrome.storage.local.set({ [cacheKey]: response.data.suggested_answer });
+        const answer = response.data.suggested_answer;
+        applyAnswer(textarea, answer);
+        chrome.storage.local.set({ [cacheKey]: answer });
+
+        // Short answers join the bank so this question never costs a model
+        // call again. Long-form essays are left out deliberately: they are
+        // tailored per application, and replaying one verbatim reads worse
+        // than redrafting it.
+        if (answer && answer.length <= 2000) {
+            chrome.runtime
+                .sendMessage({ type: "SAVE_CUSTOM_ANSWER", question, answer })
+                .then(() => loadAutofillRules())
+                .catch(() => {});
+            finish(button, "✅ Generated and saved — review before submitting", "#28a745");
+            return;
+        }
+
         finish(button, "✅ Generated — review before submitting", "#28a745");
     }
 
@@ -458,5 +609,7 @@
         subtree: true
     });
 
-    scheduleScan();
+    // Answers have to arrive before the first scan, or a form rendered
+    // immediately gets no suggestions until something else mutates the page.
+    loadAutofillRules().then(scheduleScan);
 })();

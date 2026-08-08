@@ -327,8 +327,7 @@ names the account — so a caller cannot act on someone else's workspace.
 │   ├── background.js         # Service worker: owns the token and all API calls 🔐
 │   ├── popup.html            # Extension popup UI 🪟
 │   ├── popup.js              # Popup logic 🔌
-│   ├── content.js            # Job-page extraction and answer buttons 🔍
-│   └── rules.example.js      # Safe autofill template 📝
+│   └── content.js            # Job-page extraction and form suggestions 🔍
 ├── tests/                    # pytest suite 🧪
 ├── data/
 │   └── .gitkeep              # Accounts and per-user workspaces live here 🔒
@@ -424,20 +423,17 @@ root.
 
 ## 🧩 Chrome Extension Setup
 
-Before loading the extension, create your private local rules file:
-
-```bash
-copy extension\rules.example.js extension\rules.js
-```
-
-Edit `extension/rules.js` with your own safe autofill defaults.
-
-Then load it in Chrome:
+Load it in Chrome:
 
 1. Open `chrome://extensions`
 2. Enable **Developer mode**
 3. Click **Load unpacked**
 4. Select the `extension/` folder
+
+There is no local rules file to create. Form suggestions come from your own
+account: upload a resume, then complete the **📝 Application answers** tab in
+the dashboard. The extension asks the API for whoever is signed in, so one
+build works for everybody and no personal data lives in the extension itself.
 5. Keep FastAPI running at `http://localhost:8000`
 6. Open the extension popup and **sign in with your dashboard account**
 
@@ -602,13 +598,11 @@ The following files are intentionally ignored and should not be committed:
 - `*.db`
 - `data/` (accounts, workspaces, resumes, answers)
 - `logs/`
-- `extension/rules.js`
 - `__pycache__/`
 
-Safe templates are provided:
+A safe template is provided:
 
 - `.env.example`
-- `extension/rules.example.js`
 
 ### Security posture
 

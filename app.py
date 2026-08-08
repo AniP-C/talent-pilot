@@ -11,6 +11,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 import auth
+import autofill
 import db
 import ui
 import utils
@@ -709,8 +710,23 @@ def convert_and_save_profile(user: auth.User, name: str, uploaded) -> None:
                 return
 
             filename = utils.save_profile(user.id, name, structured)
+
+            # Seed the application-form answers from the resume, so the
+            # questionnaire arrives mostly filled in. Never overwrites an
+            # answer the user has already given.
+            status.write("Pre-filling your application answers…")
+            autofill.seed_from_resume(user.id, structured)
+
             status.update(label=f"Saved {filename}", state="complete")
             st.success(f"Created profile **{utils.profile_display_name(filename)}**.")
+
+            missing = autofill.completeness(user.id)["missing"]
+            if missing:
+                st.info(
+                    f"Next: finish the **📝 Application answers** tab — "
+                    f"{missing} questions still need an answer. They are asked "
+                    "once and reused on every application."
+                )
             st.rerun()
 
         except utils.ResumeReadError as exc:
@@ -720,6 +736,126 @@ def convert_and_save_profile(user: auth.User, name: str, uploaded) -> None:
             logger.error("PDF parse failed for user %s: %s", user.id, exc)
             status.update(label="Could not read that PDF", state="error")
             st.error(f"Failed to process the PDF: {exc}")
+
+
+# =====================================================================
+# TAB: APPLICATION ANSWERS
+# =====================================================================
+def render_autofill(user: auth.User) -> None:
+    """The questionnaire behind the extension's form suggestions.
+
+    Application forms ask the same two dozen questions forever, usually buried
+    in a paragraph of legal text. Answering them once here is what lets the
+    extension suggest an answer in the page without a model call.
+    """
+    st.subheader("Application answers")
+    st.caption(
+        "Answered once and reused on every application. The extension suggests "
+        "these as you fill a form — nothing is submitted for you."
+    )
+
+    stats = autofill.completeness(user.id)
+    bank = autofill.load(user.id)
+
+    done, total = stats["answered"], stats["total"]
+    st.progress(done / total if total else 0.0, text=f"{done} of {total} answered")
+
+    if stats["missing"]:
+        st.caption(
+            "Blank answers are simply not suggested, so it is fine to skip any "
+            "that do not apply to you."
+        )
+
+    # --- The catalogue, grouped ----------------------------------------
+    with st.form("autofill_form"):
+        submitted_values: dict[str, str] = {}
+
+        for group in autofill.GROUPS:
+            fields = [f for f in autofill.FIELDS if f.group == group]
+            answered = sum(1 for f in fields if bank["answers"].get(f.key))
+
+            with st.expander(
+                f"{group}  ·  {answered}/{len(fields)}", expanded=answered < len(fields)
+            ):
+                for field in fields:
+                    current = bank["answers"].get(field.key, "")
+                    key = f"af_{field.key}"
+
+                    if field.kind == "yes_no":
+                        choices = ["", "Yes", "No"]
+                        index = choices.index(current) if current in choices else 0
+                        submitted_values[field.key] = st.selectbox(
+                            field.question,
+                            choices,
+                            index=index,
+                            key=key,
+                            format_func=lambda v: "— not answered —" if not v else v,
+                            help=field.help or None,
+                        )
+                    elif field.kind == "choice":
+                        choices = [""] + field.options
+                        index = choices.index(current) if current in choices else 0
+                        submitted_values[field.key] = st.selectbox(
+                            field.question,
+                            choices,
+                            index=index,
+                            key=key,
+                            format_func=lambda v: "— not answered —" if not v else v,
+                            help=field.help or None,
+                        )
+                    else:
+                        submitted_values[field.key] = st.text_input(
+                            field.question,
+                            value=current,
+                            key=key,
+                            help=field.help or None,
+                        )
+
+        saved = st.form_submit_button("Save answers", use_container_width=True)
+
+    if saved:
+        autofill.set_answers(user.id, submitted_values)
+        st.success("Saved. The extension picks these up on its next page load.")
+        st.rerun()
+
+    st.divider()
+
+    # --- Anything the catalogue does not cover --------------------------
+    st.markdown("**Your own questions**")
+    st.caption(
+        "Anything a form asks that is not above. Answers drafted with AI in the "
+        "extension are saved here automatically, so the same question is instant "
+        "and free next time."
+    )
+
+    if bank["custom"]:
+        for entry in bank["custom"]:
+            row, actions = st.columns([5, 1])
+            with row:
+                st.markdown(f"**{entry['question']}**")
+                st.caption(entry["answer"])
+            if actions.button(
+                "Remove", key=f"rm_{entry['question'][:40]}", use_container_width=True
+            ):
+                autofill.remove_custom(user.id, entry["question"])
+                st.rerun()
+    else:
+        st.caption("None saved yet.")
+
+    with st.form("custom_answer_form", clear_on_submit=True):
+        question = st.text_input(
+            "Question", placeholder="e.g. Do you hold a valid driving licence?"
+        )
+        answer = st.text_input("Your answer", placeholder="e.g. Yes")
+        added = st.form_submit_button("Add answer")
+
+    if added:
+        try:
+            autofill.add_custom(user.id, question, answer)
+            st.success("Added.")
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
 
 
 # =====================================================================
@@ -855,11 +991,17 @@ def main() -> None:
 
     st.title("Job Application Tracker")
 
+    # Surfaced on the tab itself so an unfinished questionnaire is visible
+    # without having to go looking for it.
+    setup = autofill.completeness(user.id)
+    answers_badge = f" ({setup['missing']})" if setup["missing"] else ""
+
     (
         dashboard_tab,
         add_tab,
         analyzer_tab,
         profiles_tab,
+        answers_tab,
         activity_tab,
         settings_tab,
     ) = st.tabs(
@@ -868,6 +1010,7 @@ def main() -> None:
             "➕ Add application",
             "🧠 Analyzer",
             "📄 Profiles",
+            f"📝 Application answers{answers_badge}",
             "📜 Activity",
             "⚙️ Settings",
         ]
@@ -881,6 +1024,8 @@ def main() -> None:
         render_analyzer(user, db_path, selected_profile)
     with profiles_tab:
         render_profiles(user)
+    with answers_tab:
+        render_autofill(user)
     with activity_tab:
         render_activity(user, db_path)
     with settings_tab:

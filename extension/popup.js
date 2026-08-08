@@ -400,7 +400,7 @@ el("btn-enable-site").addEventListener("click", () => {
 
         await chrome.scripting.executeScript({
             target: { tabId },
-            files: ["rules.js", "content.js"]
+            files: ["content.js"]
         });
 
         show("btn-enable-site", false);
@@ -474,7 +474,7 @@ el("btn-save").addEventListener("click", async () => {
     show("company-prompt", false);
 });
 
-el("open-dashboard").addEventListener("click", async () => {
+async function openDashboard() {
     // Ask the API for a one-time code so the dashboard adopts this session
     // instead of presenting a second sign-in form.
     const response = await send({ type: "OPEN_DASHBOARD" });
@@ -482,7 +482,9 @@ el("open-dashboard").addEventListener("click", async () => {
     chrome.tabs.create({
         url: response.ok ? response.data.url : dashboardUrl
     });
-});
+}
+
+el("open-dashboard").addEventListener("click", openDashboard);
 
 // ---------------------------------------------------------------------------
 // Boot
@@ -520,7 +522,37 @@ async function initialize() {
 
     el("account-email").textContent = status.data.email;
     await loadProfiles();
+    await showSetupNudge();
     await scanActivePage();
+}
+
+// Form suggestions only exist once the questionnaire is filled in. Without
+// this, a new user sees no suggestions and no explanation why.
+async function showSetupNudge() {
+    const response = await send({ type: "GET_AUTOFILL" });
+
+    if (!response.ok) return;
+
+    const missing = response.data.completeness?.missing || 0;
+    const banner = el("setup-nudge");
+
+    if (!missing) {
+        show("setup-nudge", false);
+        return;
+    }
+
+    banner.textContent = "";
+
+    const text = document.createTextNode(
+        `${missing} application answers not set up yet — `
+    );
+    const link = document.createElement("span");
+    link.className = "link";
+    link.textContent = "finish setup ↗";
+    link.addEventListener("click", openDashboard);
+
+    banner.append(text, link);
+    show("setup-nudge", true);
 }
 
 initialize();

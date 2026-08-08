@@ -17,6 +17,10 @@ PROTECTED_ENDPOINTS = [
     ("post", "/generate-answer", {"question": "Why us?"}),
     ("post", "/save-answer", {"question": "Why us?", "answer": "Because."}),
     ("get", "/auth/me", None),
+    ("get", "/autofill", None),
+    ("get", "/autofill/questions", None),
+    ("post", "/autofill/answers", {"answers": {}}),
+    ("post", "/autofill/custom", {"question": "Q", "answer": "A"}),
 ]
 
 
@@ -220,3 +224,119 @@ def test_status_update_rejects_invalid_status(account):
     )
 
     assert response.status_code == 400
+
+
+# =====================================================================
+# AUTOFILL — the contract the extension depends on
+# =====================================================================
+def test_a_new_account_starts_with_no_answers(account):
+    body = client.get("/autofill", headers=account["headers"]).json()
+
+    assert body["rules"] == []
+    assert body["completeness"]["answered"] == 0
+
+
+def test_answers_round_trip_through_the_api(account):
+    saved = client.post(
+        "/autofill/answers",
+        headers=account["headers"],
+        json={"answers": {"work_authorized": "Yes", "needs_sponsorship": "No"}},
+    )
+    assert saved.status_code == 200
+    assert saved.json()["completeness"]["answered"] == 2
+
+    rules = client.get("/autofill", headers=account["headers"]).json()["rules"]
+    by_key = {rule["key"]: rule["answer"] for rule in rules}
+
+    assert by_key["work_authorized"] == "Yes"
+    assert by_key["needs_sponsorship"] == "No"
+
+
+def test_rules_carry_the_patterns_the_extension_matches_on(account):
+    client.post(
+        "/autofill/answers",
+        headers=account["headers"],
+        json={"answers": {"notice_period": "30 days"}},
+    )
+
+    rule = client.get("/autofill", headers=account["headers"]).json()["rules"][0]
+
+    assert rule["patterns"]
+    assert rule["literal"] is False
+    assert rule["answer"] == "30 days"
+
+
+def test_a_custom_answer_is_marked_literal(account):
+    """User text must not be treated as a regex in the page."""
+    client.post(
+        "/autofill/custom",
+        headers=account["headers"],
+        json={"question": "Driving licence? (UK)", "answer": "Yes"},
+    )
+
+    rule = client.get("/autofill", headers=account["headers"]).json()["rules"][0]
+
+    assert rule["literal"] is True
+    assert rule["patterns"] == ["Driving licence? (UK)"]
+
+
+def test_the_questionnaire_exposes_the_catalogue(account):
+    body = client.get("/autofill/questions", headers=account["headers"]).json()
+
+    assert body["groups"]
+    assert len(body["fields"]) == len(body["fields"])
+    assert all({"key", "question", "kind", "group"} <= set(f) for f in body["fields"])
+
+
+def test_one_account_cannot_see_another_accounts_answers(account):
+    """The reason this replaced a bundled rules.js in the first place."""
+    import uuid
+
+    client.post(
+        "/autofill/answers",
+        headers=account["headers"],
+        json={"answers": {"phone": "+91 11111 11111"}},
+    )
+
+    other = client.post(
+        "/auth/register",
+        json={"email": f"{uuid.uuid4().hex}@example.com", "password": "password123"},
+    ).json()
+    other_headers = {"Authorization": f"Bearer {other['token']}"}
+
+    assert client.get("/autofill", headers=other_headers).json()["rules"] == []
+
+
+def test_a_short_saved_answer_becomes_reusable(account, monkeypatch):
+    """An AI-drafted answer joins the bank, so the same question is free next
+    time. Patched so no model call is made."""
+    from api import server
+
+    monkeypatch.setattr(server, "save_answer_to_memory", lambda *a, **k: "q.txt")
+
+    response = client.post(
+        "/save-answer",
+        headers=account["headers"],
+        json={"question": "Do you have a driving licence?", "answer": "Yes"},
+    )
+
+    assert response.json()["reusable"] is True
+    rules = client.get("/autofill", headers=account["headers"]).json()["rules"]
+    assert any(r["answer"] == "Yes" for r in rules)
+
+
+def test_a_long_essay_is_not_added_to_the_bank(account, monkeypatch):
+    """Long-form answers are tailored per application; replaying one verbatim
+    reads worse than redrafting it."""
+    from api import server
+
+    monkeypatch.setattr(server, "save_answer_to_memory", lambda *a, **k: "q.txt")
+
+    response = client.post(
+        "/save-answer",
+        headers=account["headers"],
+        json={"question": "Tell us about yourself", "answer": "x" * 5000},
+    )
+
+    assert response.json()["reusable"] is False
+    assert client.get("/autofill", headers=account["headers"]).json()["rules"] == []

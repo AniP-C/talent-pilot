@@ -135,6 +135,16 @@
             line-height: 1.5;
         }
 
+        .nudge {
+            background: #fff8e1;
+            border: 1px solid #ffe08a;
+            border-radius: 6px;
+            padding: 7px 9px;
+            margin-bottom: 10px;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+
         #status-area { margin-top: 10px; font-size: 12.5px; line-height: 1.5; }
         .warning { color: var(--danger); font-weight: 600; }
         .success-text { color: var(--success); font-weight: 600; }
@@ -181,6 +191,10 @@
             <span class="email" id="account-email"></span>
             <span class="link" id="sign-out">Sign out</span>
         </div>
+
+        <!-- Form suggestions only exist once the questionnaire is filled in.
+             Without this, a new user sees no suggestions and no reason why. -->
+        <div id="setup-nudge" class="nudge hidden"></div>
 
         <div class="card" id="job-info">Scanning page…</div>
 
