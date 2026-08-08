@@ -72,6 +72,36 @@ def test_corporate_suffix_overrides_role_words():
     assert looks_like_role("Engineering Ltd") is False
 
 
+@pytest.mark.parametrize(
+    "value", ["Agentic AI", "Generative AI", "Machine Learning", "Applied Research"]
+)
+def test_a_trailing_specialisation_is_not_a_company(value):
+    """Found in production: "Indeed Application: AI/ML Engineer - Agentic AI"
+    stored a company of "Agentic AI", which is the tail of the job title.
+
+    These carry no role word, so the general rule misses them — a multi-word
+    string built purely from technology qualifiers is a specialisation."""
+    assert looks_like_role(value) is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        # Real employers seen in this tracker; none may regress.
+        "Capgemini", "AgroNest", "Zoho", "Turing", "Meesho", "Razorpay",
+        # A qualifier-only name survives once it carries a corporate suffix.
+        "Data Systems Pvt Ltd",
+    ],
+)
+def test_the_specialisation_rule_does_not_catch_real_companies(value):
+    assert looks_like_role(value) is False
+
+
+def test_a_single_qualifier_word_is_not_rejected():
+    """One word is too little to call: "Vision" could be an employer."""
+    assert looks_like_role("Vision") is False
+
+
 # =====================================================================
 # COMPANY VALIDATION
 # =====================================================================

@@ -63,7 +63,7 @@ SERVICE_NAME = "talent-pilot-api"
 
 app = FastAPI(
     title="Job AI Assistant API",
-    version="2.0.0",
+    version="2.1.0",
     description="Backend for the AI Job Copilot browser extension.",
 )
 

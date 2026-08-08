@@ -38,6 +38,11 @@ _ROLE_QUALIFIERS = {
     "stack", "system", "systems", "test", "and", "&", "-", "the", "a", "an",
     "learning", "security", "software", "solution", "solutions", "support",
     "web", "java", "javascript", "react", "node", "golang", "go", "rust",
+    # Specialisations that trail a job title after a dash — "AI/ML Engineer –
+    # Agentic AI" is one role, not a role at a company called Agentic AI.
+    "agentic", "llm", "llms", "nlp", "vision", "robotics", "gen",
+    "infrastructure", "reliability", "site", "embedded", "firmware",
+    "blockchain", "quantitative", "quant", "research", "applied",
 }
 
 # Placeholders the scraper and the model emit when they find nothing.
@@ -132,7 +137,17 @@ def looks_like_role(value: str) -> bool:
         return False
 
     if not any(word in _ROLE_WORDS for word in words):
-        return False
+        # No role word, but a multi-word string made entirely of seniority and
+        # technology qualifiers is a specialisation rather than an employer:
+        # "Indeed Application: AI/ML Engineer – Agentic AI" yields "Agentic AI",
+        # which is the tail of the job title.
+        #
+        # The trade-off is deliberate. A real company called "Data Systems"
+        # would be rejected — but such a name almost always appears with a
+        # suffix ("Pvt Ltd", "Inc") in a recruiter email, which the marker
+        # check above already accepts. Skipping an email is recoverable and
+        # logged; a wrong company silently splits an application in two.
+        return len(words) >= 2 and all(word in _ROLE_QUALIFIERS for word in words)
 
     # Every word is either a role word or a qualifier -> nothing identifies a
     # company, so the string is a bare job title.

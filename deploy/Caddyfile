@@ -11,7 +11,11 @@ YOUR_DOMAIN {
 
 	# ---- API routes (FastAPI on 8000) --------------------------------
 	# Listed explicitly so a future dashboard page can never shadow one.
-	@api path /health* /auth/* /jobs* /profiles* /check-job* /save-job* /analyze-job* /generate-answer* /save-answer* /docs* /openapi.json
+	# EVERY new API endpoint must be added here. A path missing from this list
+	# does not 404 — it falls through to the dashboard, which answers 200 with
+	# an HTML page, so the extension sees a success it cannot parse. That is a
+	# much harder failure to read than a 404.
+	@api path /health* /auth/* /jobs* /profiles* /check-job* /save-job* /analyze-job* /generate-answer* /save-answer* /autofill* /docs* /openapi.json
 	handle @api {
 		reverse_proxy 127.0.0.1:8000
 	}
@@ -54,7 +58,11 @@ YOUR_DOMAIN {
 # :80 {
 # 	encode gzip
 #
-# 	@api path /health* /auth/* /jobs* /profiles* /check-job* /save-job* /analyze-job* /generate-answer* /save-answer* /docs* /openapi.json
+# 	# EVERY new API endpoint must be added here. A path missing from this list
+	# does not 404 — it falls through to the dashboard, which answers 200 with
+	# an HTML page, so the extension sees a success it cannot parse. That is a
+	# much harder failure to read than a 404.
+	@api path /health* /auth/* /jobs* /profiles* /check-job* /save-job* /analyze-job* /generate-answer* /save-answer* /autofill* /docs* /openapi.json
 # 	handle @api {
 # 		reverse_proxy 127.0.0.1:8000
 # 	}
