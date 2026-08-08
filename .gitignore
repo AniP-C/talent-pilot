@@ -51,3 +51,6 @@ Thumbs.db
 random_test_modelu.py
 testing_jd.txt
 .claude/launch.json
+
+# Built extension packages for the Chrome Web Store
+dist/
