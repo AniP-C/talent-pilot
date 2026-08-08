@@ -4,7 +4,7 @@ Streamlit entry point. Run with:  streamlit run app.py
 """
 
 import json
-from datetime import date
+from datetime import date, datetime
 
 import pandas as pd
 import streamlit as st
@@ -21,6 +21,7 @@ from config import (
     JOB_SOURCES,
     REGISTRATION_CLOSED,
     SIGNUP_CODE,
+    SYNC_LOG_FILE,
     TOKEN_TTL_DAYS,
     VALID_STATUSES,
     logger,
@@ -462,6 +463,8 @@ def render_job_editor(jobs: list[dict], db_path) -> None:
             st.success("Status updated.")
             st.rerun()
 
+    render_timeline(job_id, db_path)
+
     if current.get("notes"):
         with st.expander("Notes"):
             st.text(current["notes"])
@@ -471,6 +474,69 @@ def render_job_editor(jobs: list[dict], db_path) -> None:
         if st.button("Delete permanently", type="secondary"):
             db.delete_job(job_id, db_path=db_path)
             st.rerun()
+
+
+def render_timeline(job_id: int, db_path) -> None:
+    """Show how an application moved through the hiring stages.
+
+    The jobs table only knows where something stands *now*, which cannot
+    answer "how long have they sat on this?" or "when did it go quiet?".
+    """
+    history = db.get_status_history(job_id, db_path=db_path)
+
+    if not history:
+        return
+
+    with st.expander(f"Stage timeline ({len(history)} events)", expanded=False):
+        for entry in history:
+            stamp = _readable_timestamp(entry["occurred_at"])
+            arrow = (
+                f"{ui.status_label(entry['from_status'])} → {ui.status_label(entry['to_status'])}"
+                if entry["from_status"]
+                else ui.status_label(entry["to_status"])
+            )
+
+            if entry["applied"]:
+                st.markdown(f"**{stamp}** · {arrow}  \n*via {entry['source']}*")
+            else:
+                # An observation the rank guard declined to apply. Showing it
+                # is what makes a surprising status explainable instead of
+                # looking like the sync simply missed an email.
+                st.markdown(
+                    f"**{stamp}** · ~~{arrow}~~ *(not applied — would move backwards)*  \n"
+                    f"*via {entry['source']}*"
+                )
+
+            if entry["reason"]:
+                st.caption(entry["reason"])
+
+        st.caption(_duration_summary(history))
+
+
+def _readable_timestamp(value: str) -> str:
+    try:
+        return datetime.fromisoformat(value).strftime("%d %b %Y, %H:%M")
+    except (ValueError, TypeError):
+        return value or "—"
+
+
+def _duration_summary(history: list[dict]) -> str:
+    """How long this application has been running, and how long since it moved."""
+    applied = [entry for entry in history if entry["applied"]]
+    if not applied:
+        return ""
+
+    try:
+        first = datetime.fromisoformat(applied[0]["occurred_at"])
+        last = datetime.fromisoformat(applied[-1]["occurred_at"])
+    except (ValueError, TypeError):
+        return ""
+
+    now = datetime.now(first.tzinfo)
+    return (
+        f"Open {(now - first).days} days · "
+        f"{(now - last).days} days since the last change"
+    )
 
 
 # =====================================================================
@@ -657,6 +723,77 @@ def convert_and_save_profile(user: auth.User, name: str, uploaded) -> None:
 
 
 # =====================================================================
+# TAB: ACTIVITY
+# =====================================================================
+def render_activity(user: auth.User, db_path) -> None:
+    """Recent sync decisions and stage changes.
+
+    Hosted, the log files sit on a VM behind SSH, which in practice means
+    nobody ever reads them. Every automated status change is an unattended
+    decision about the user's data, so it belongs somewhere they can actually
+    look.
+    """
+    st.subheader("Recent stage changes")
+
+    changes = db.get_recent_status_changes(limit=40, db_path=db_path)
+
+    if not changes:
+        st.info("No stage changes recorded yet.")
+    else:
+        rows = [
+            {
+                "When": _readable_timestamp(entry["occurred_at"]),
+                "Application": f"{entry['company']} — {entry['role']}",
+                "Change": (
+                    f"{entry['from_status']} → {entry['to_status']}"
+                    if entry["from_status"]
+                    else entry["to_status"]
+                ),
+                "Applied": "Yes" if entry["applied"] else "No (would move backwards)",
+                "Source": entry["source"],
+                "Detail": entry["reason"] or "",
+            }
+            for entry in changes
+        ]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.subheader("Inbox sync log")
+    st.caption(
+        f"Written to `{SYNC_LOG_FILE}`. Every email the sync considered, and "
+        "why it was or was not acted on."
+    )
+
+    lines = _tail(SYNC_LOG_FILE, 200)
+
+    if not lines:
+        st.info("No syncs have run yet.")
+        return
+
+    only_decisions = st.checkbox(
+        "Show only decisions (hide progress lines)", value=True
+    )
+
+    if only_decisions:
+        lines = [
+            line
+            for line in lines
+            if any(tag in line for tag in ("SKIP", "UPDATED", "CREATED", "NOTED", "ERROR"))
+        ]
+
+    st.code("\n".join(lines[-120:]) or "No matching lines.", language="log")
+
+
+def _tail(path, limit: int) -> list[str]:
+    """Last ``limit`` lines of a log file, newest last."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            return [line.rstrip("\n") for line in handle.readlines()[-limit:]]
+    except (FileNotFoundError, OSError):
+        return []
+
+
+# =====================================================================
 # TAB: SETTINGS
 # =====================================================================
 def render_settings(user: auth.User) -> None:
@@ -718,8 +855,22 @@ def main() -> None:
 
     st.title("Job Application Tracker")
 
-    dashboard_tab, add_tab, analyzer_tab, profiles_tab, settings_tab = st.tabs(
-        ["📊 Dashboard", "➕ Add application", "🧠 Analyzer", "📄 Profiles", "⚙️ Settings"]
+    (
+        dashboard_tab,
+        add_tab,
+        analyzer_tab,
+        profiles_tab,
+        activity_tab,
+        settings_tab,
+    ) = st.tabs(
+        [
+            "📊 Dashboard",
+            "➕ Add application",
+            "🧠 Analyzer",
+            "📄 Profiles",
+            "📜 Activity",
+            "⚙️ Settings",
+        ]
     )
 
     with dashboard_tab:
@@ -730,6 +881,8 @@ def main() -> None:
         render_analyzer(user, db_path, selected_profile)
     with profiles_tab:
         render_profiles(user)
+    with activity_tab:
+        render_activity(user, db_path)
     with settings_tab:
         render_settings(user)
 

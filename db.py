@@ -13,10 +13,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
-from config import ACTIVE_STATUSES, DEFAULT_STATUS, VALID_STATUSES, logger
+from config import (
+    ACTIVE_STATUSES,
+    DEFAULT_STATUS,
+    STATUS_RANK,
+    VALID_STATUSES,
+    logger,
+)
 
 # Bumped whenever the schema changes; see _migrate().
-SCHEMA_VERSION = 1
+#   v1 -> v2  adds status_history
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -47,6 +54,29 @@ CREATE TABLE IF NOT EXISTS processed_emails (
     message_id   TEXT PRIMARY KEY,
     processed_at TEXT NOT NULL
 );
+
+-- Every status observation, whether or not it changed the job's status.
+--
+-- The jobs table holds only where an application stands *now*, which cannot
+-- answer "how long did they sit on my assessment?" or "when did this go
+-- quiet?". This table is the append-only record that can.
+--
+-- `applied = 0` marks an observation that was deliberately not written to
+-- jobs.status — a backwards move rejected by the rank check. Keeping it
+-- visible means a wrong-looking timeline can be explained rather than guessed
+-- at.
+CREATE TABLE IF NOT EXISTS status_history (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id      INTEGER NOT NULL REFERENCES jobs (id) ON DELETE CASCADE,
+    from_status TEXT,
+    to_status   TEXT NOT NULL,
+    applied     INTEGER NOT NULL DEFAULT 1,
+    source      TEXT NOT NULL DEFAULT 'Manual',
+    reason      TEXT,
+    occurred_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_history_job ON status_history (job_id, id);
 """
 
 JOB_COLUMNS = [
@@ -123,10 +153,111 @@ def _migrate(conn: sqlite3.Connection, db_path) -> None:
             f"(schema v{current} > v{SCHEMA_VERSION}). Please update."
         )
 
-    # Future migrations go here as `if current < N: ...` blocks.
+    if current < 2:
+        # status_history itself is created by _SCHEMA above, which has already
+        # run. What this step adds is a seed row for every job that predates
+        # the table, so an existing tracker shows a timeline rather than an
+        # empty panel.
+        #
+        # `created_at` is used as the timestamp because it is the only date
+        # available: the real transition times were never recorded. `source`
+        # says 'Migration' so a backfilled entry is never mistaken for an
+        # observation the app actually made.
+        seeded = conn.execute(
+            """
+            INSERT INTO status_history
+                (job_id, from_status, to_status, applied, source, reason, occurred_at)
+            SELECT id, NULL, status, 1, 'Migration',
+                   'Recorded when stage history was introduced', created_at
+            FROM jobs
+            WHERE id NOT IN (SELECT job_id FROM status_history)
+            """
+        ).rowcount
+
+        if seeded:
+            logger.info("Backfilled stage history for %s job(s) in %s", seeded, db_path)
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-    logger.info("Schema initialised at v%s for %s", SCHEMA_VERSION, db_path)
+    logger.info(
+        "Schema at v%s for %s (was v%s)", SCHEMA_VERSION, db_path, current
+    )
+
+
+# =====================================================================
+# STAGE HISTORY
+# =====================================================================
+def _record_transition(
+    conn: sqlite3.Connection,
+    job_id: int,
+    from_status: Optional[str],
+    to_status: str,
+    *,
+    applied: bool,
+    source: str,
+    reason: str = "",
+) -> None:
+    """Append one status observation. Takes an open connection deliberately,
+    so the history row and the jobs row commit or roll back together."""
+    conn.execute(
+        """
+        INSERT INTO status_history
+            (job_id, from_status, to_status, applied, source, reason, occurred_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (int(job_id), from_status, to_status, 1 if applied else 0, source, reason, _utcnow()),
+    )
+
+
+def advances(current: Optional[str], proposed: str) -> bool:
+    """True when ``proposed`` is at least as far along as ``current``.
+
+    Guards automated updates only. A person editing the dashboard is
+    authoritative and bypasses this — the point is to stop a batch of email
+    arriving out of order from rewinding an application, not to stop the user
+    correcting a mistake.
+    """
+    if not current:
+        return True
+    return STATUS_RANK.get(proposed, 0) >= STATUS_RANK.get(current, 0)
+
+
+def get_recent_status_changes(*, db_path, limit: int = 40) -> list[dict]:
+    """Recent status observations across every application, newest first.
+
+    Joined onto jobs so the dashboard can name the application without a
+    second query per row.
+    """
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT h.id, h.job_id, h.from_status, h.to_status, h.applied,
+                   h.source, h.reason, h.occurred_at,
+                   j.company, j.role
+            FROM status_history h
+            JOIN jobs j ON j.id = h.job_id
+            ORDER BY h.occurred_at DESC, h.id DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def get_status_history(job_id: int, *, db_path) -> list[dict]:
+    """Return every status observation for a job, oldest first."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, job_id, from_status, to_status, applied, source, reason, occurred_at
+            FROM status_history
+            WHERE job_id = ?
+            ORDER BY occurred_at, id
+            """,
+            (int(job_id),),
+        ).fetchall()
+
+    return [dict(row) for row in rows]
 
 
 # =====================================================================
@@ -184,6 +315,10 @@ def add_job(
                 ),
             )
             job_id = cursor.lastrowid
+            _record_transition(
+                conn, job_id, None, status,
+                applied=True, source=source, reason="Application added",
+            )
     except sqlite3.IntegrityError as exc:
         logger.warning("Duplicate rejected: %s - %s", company, role)
         raise DuplicateJobError(f"{company} - {role} is already tracked.") from exc
@@ -192,23 +327,45 @@ def add_job(
     return job_id
 
 
-def update_status(job_id: int, new_status: str, *, db_path) -> bool:
-    """Update a job's status. Returns False if the id does not exist."""
+def update_status(
+    job_id: int, new_status: str, *, db_path, source: str = "Manual", reason: str = ""
+) -> bool:
+    """Update a job's status. Returns False if the id does not exist.
+
+    Always applies the change — this is the path a person drives from the
+    dashboard, and the user is the authority on their own application. The
+    rank guard in :func:`advances` exists for automated callers.
+    """
     new_status = _validate_status(new_status)
 
     with connect(db_path) as conn:
-        cursor = conn.execute(
+        row = conn.execute(
+            "SELECT status FROM jobs WHERE id = ?", (int(job_id),)
+        ).fetchone()
+
+        if row is None:
+            logger.warning("Tried to update missing job #%s", job_id)
+            return False
+
+        previous = row["status"]
+
+        conn.execute(
             "UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
             (new_status, _utcnow(), int(job_id)),
         )
-        updated = cursor.rowcount > 0
 
-    if updated:
-        logger.info("Job #%s status -> %s", job_id, new_status)
-    else:
-        logger.warning("Tried to update missing job #%s", job_id)
+        # A no-op re-save is not a transition and would only clutter the
+        # timeline, so it is not recorded.
+        if previous != new_status:
+            _record_transition(
+                conn, job_id, previous, new_status,
+                applied=True, source=source, reason=reason,
+            )
+            logger.info(
+                "Job #%s status %s -> %s (%s)", job_id, previous, new_status, source
+            )
 
-    return updated
+    return True
 
 
 def delete_job(job_id: int, *, db_path) -> bool:
@@ -243,6 +400,61 @@ def append_note(job_id: int, note: str, *, db_path) -> bool:
     return True
 
 
+def _find_job_for_email(
+    conn: sqlite3.Connection, company_name: str, role: str
+) -> Optional[sqlite3.Row]:
+    """Locate the application an email is about.
+
+    Matching on company alone was wrong: two applications at one company meant
+    a rejection for the second role silently flipped the first one. When the
+    email names a role, that role picks the row; only when it does not does
+    the search fall back to the company, and then only when the company has a
+    single tracked application.
+    """
+    role = (role or "").strip()
+
+    if role:
+        # Exact role first, then a containment match so "Senior Platform
+        # Engineer" in an email still finds a "Platform Engineer" row.
+        row = conn.execute(
+            """
+            SELECT id, notes, status, role FROM jobs
+            WHERE LOWER(company) = LOWER(?) AND LOWER(role) = LOWER(?)
+            ORDER BY id LIMIT 1
+            """,
+            (company_name, role),
+        ).fetchone()
+
+        if row:
+            return row
+
+        row = conn.execute(
+            """
+            SELECT id, notes, status, role FROM jobs
+            WHERE LOWER(company) = LOWER(?)
+              AND (INSTR(LOWER(?), LOWER(role)) > 0 OR INSTR(LOWER(role), LOWER(?)) > 0)
+            ORDER BY id LIMIT 1
+            """,
+            (company_name, role, role),
+        ).fetchone()
+
+        if row:
+            return row
+
+    candidates = conn.execute(
+        "SELECT id, notes, status, role FROM jobs WHERE LOWER(company) = LOWER(?) ORDER BY id",
+        (company_name,),
+    ).fetchall()
+
+    # Exactly one application at this company — unambiguous, so use it. More
+    # than one and there is no way to tell which the email is about; returning
+    # None makes the caller create a new row rather than corrupt a good one.
+    if len(candidates) == 1:
+        return candidates[0]
+
+    return None
+
+
 def update_job_from_email(
     company_name: str,
     category: str,
@@ -250,56 +462,120 @@ def update_job_from_email(
     reasoning: str,
     *,
     db_path,
+    role: str = "",
 ) -> str:
     """Apply an AI-classified email to the workspace.
 
-    Updates the matching company's status and appends the email as a note; if
-    no such company is tracked, creates a new entry. Returns ``"updated"`` or
-    ``"created"``.
+    Returns ``"updated"`` when an existing application moved forward,
+    ``"noted"`` when the email was recorded but the status was left alone
+    (a backwards move), or ``"created"`` when a new application was tracked.
     """
     company_name = (company_name or "").strip()
     if not company_name:
         raise ValueError("Company name is required.")
 
     category = _validate_status(category)
+    role = (role or "").strip()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     note = f"[{timestamp} | {category}]\nSubject: {subject}\nAI Note: {reasoning}"
     now = _utcnow()
 
     with connect(db_path) as conn:
-        row = conn.execute(
-            "SELECT id, notes FROM jobs WHERE LOWER(company) = LOWER(?) ORDER BY id LIMIT 1",
-            (company_name,),
-        ).fetchone()
+        row = _find_job_for_email(conn, company_name, role)
 
         if row:
             existing = row["notes"] or ""
-            conn.execute(
-                "UPDATE jobs SET status = ?, notes = ?, updated_at = ? WHERE id = ?",
-                (category, f"{existing}\n\n{note}".strip(), now, row["id"]),
-            )
-            logger.info("Email updated %s -> %s", company_name, category)
-            return "updated"
+            combined = f"{existing}\n\n{note}".strip()
+            previous = row["status"]
+            moves_forward = advances(previous, category)
 
-        conn.execute(
-            """
-            INSERT INTO jobs (
-                company, role, status, date_applied, notes, source,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                company_name,
-                "Unknown Role",
-                category,
-                _today(),
-                note,
-                "Email Sync",
-                now,
-                now,
-            ),
+            if moves_forward and previous != category:
+                conn.execute(
+                    "UPDATE jobs SET status = ?, notes = ?, updated_at = ? WHERE id = ?",
+                    (category, combined, now, row["id"]),
+                )
+            else:
+                # The note is still worth keeping even when the status is not
+                # changed — it is evidence of what arrived and when.
+                conn.execute(
+                    "UPDATE jobs SET notes = ?, updated_at = ? WHERE id = ?",
+                    (combined, now, row["id"]),
+                )
+
+            if previous != category:
+                _record_transition(
+                    conn, row["id"], previous, category,
+                    applied=moves_forward,
+                    source="Email Sync",
+                    reason=subject,
+                )
+
+            if moves_forward:
+                logger.info(
+                    "Email moved %s / %s: %s -> %s",
+                    company_name, row["role"], previous, category,
+                )
+                return "updated"
+
+            logger.info(
+                "Email for %s / %s noted but not applied: %s would move back from %s",
+                company_name, row["role"], category, previous,
+            )
+            return "noted"
+
+        try:
+            cursor = conn.execute(
+                """
+                INSERT INTO jobs (
+                    company, role, status, date_applied, notes, source,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    company_name,
+                    role or "Unknown Role",
+                    category,
+                    _today(),
+                    note,
+                    "Email Sync",
+                    now,
+                    now,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            # The company has several tracked roles, so _find_job_for_email
+            # declined to guess — and one of them already occupies this exact
+            # company+role. Attach the note there rather than lose the email.
+            existing_row = conn.execute(
+                """
+                SELECT id, notes FROM jobs
+                WHERE LOWER(company) = LOWER(?) AND LOWER(role) = LOWER(?)
+                """,
+                (company_name, role or "Unknown Role"),
+            ).fetchone()
+
+            conn.execute(
+                "UPDATE jobs SET notes = ?, updated_at = ? WHERE id = ?",
+                (
+                    f"{existing_row['notes'] or ''}\n\n{note}".strip(),
+                    now,
+                    existing_row["id"],
+                ),
+            )
+            logger.info(
+                "Email for %s / %s attached to existing row #%s",
+                company_name, role or "Unknown Role", existing_row["id"],
+            )
+            return "noted"
+
+        _record_transition(
+            conn, cursor.lastrowid, None, category,
+            applied=True, source="Email Sync", reason=subject,
         )
-        logger.info("Email created tracking for %s -> %s", company_name, category)
+        logger.info(
+            "Email created tracking for %s / %s -> %s",
+            company_name, role or "Unknown Role", category,
+        )
         return "created"
 
 

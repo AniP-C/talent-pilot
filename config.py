@@ -55,6 +55,28 @@ DEFAULT_STATUS = "APPLIED"
 # Statuses that mean the application is still alive.
 ACTIVE_STATUSES = {"APPLIED", "ASSESSMENT", "INTERVIEW", "ACTION_REQUIRED"}
 
+# How far through a hiring process each status sits.
+#
+# Inbox sync uses this to refuse to move an application *backwards*. Gmail
+# hands back a batch of mail covering several days, so a sync can legitimately
+# see "application received" and "we'd like to interview you" in the same run —
+# and without a ranking, whichever happened to be processed last would win and
+# an interview could be overwritten by the original confirmation.
+#
+# ACTION_REQUIRED ranks low on purpose: "send us your documents" can arrive at
+# any stage, and it must never pull a later stage back. The observation is
+# still recorded in status_history, so nothing is lost.
+STATUS_RANK = {
+    "APPLIED": 1,
+    "ACTION_REQUIRED": 2,
+    "ASSESSMENT": 3,
+    "INTERVIEW": 4,
+    "OFFER": 5,
+    # Terminal: a rejection is definitive at whatever stage it arrives, so it
+    # outranks everything and always applies.
+    "REJECTED": 6,
+}
+
 # Display metadata for the UI. Keys must stay in sync with VALID_STATUSES.
 STATUS_LABELS = {
     "APPLIED": "🔵 Applied",
@@ -138,8 +160,16 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 LOG_FILE = LOG_DIR / "app.log"
 ERROR_LOG_FILE = LOG_DIR / "errors.log"
+# Inbox sync only. Every automated status change is written here, and this is
+# the file to open when asking "why did the tracker decide that?" — app.log
+# carries the same lines but buries them under routine HTTP traffic.
+SYNC_LOG_FILE = LOG_DIR / "sync.log"
 
 logger = logging.getLogger("JobTracker")
+
+# Child logger: records propagate to the handlers above, so app.log still sees
+# everything, while sync.log below sees only these.
+sync_logger = logger.getChild("sync")
 
 if not logger.handlers:
     logger.setLevel(LOG_LEVEL)
@@ -177,3 +207,18 @@ if not logger.handlers:
     # Streamlit re-imports modules on every rerun; without this the root
     # logger picks up duplicate records.
     logger.propagate = False
+
+if not sync_logger.handlers:
+    # Kept for longer than app.log (10 files rather than 3): an inbox sync
+    # runs a handful of times a day, so the volume is small, and a wrong
+    # status is usually noticed days after the email that caused it.
+    _sync_handler = RotatingFileHandler(
+        SYNC_LOG_FILE, maxBytes=1_000_000, backupCount=10, encoding="utf-8"
+    )
+    _sync_handler.setFormatter(
+        logging.Formatter(
+            fmt="%(asctime)s | %(levelname)-8s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+    sync_logger.addHandler(_sync_handler)

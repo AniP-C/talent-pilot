@@ -32,6 +32,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import auth
 import db
+import job_fields
 import utils
 import workspace
 from ai.resume_parser import (
@@ -477,10 +478,24 @@ def save_job(job: JobData, user: auth.User = Depends(current_user)) -> dict:
     db_path = workspace.jobs_db_path(user.id)
     db.create_table(db_path)
 
+    # The scraper reads untrusted markup, so a job title arriving in `company`
+    # is a real outcome rather than a hypothetical one. It has to be caught
+    # here as well as in the extension: a stale extension build, or any other
+    # client, would otherwise write a row that no later email can match.
+    try:
+        company = job_fields.validate_company(job.company, job.role)
+        role = job_fields.validate_role(job.role)
+    except job_fields.InvalidJobField as exc:
+        logger.warning(
+            "Rejected job from user %s: company=%r role=%r - %s",
+            user.id, job.company, job.role, exc,
+        )
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     try:
         job_id = db.add_job(
-            company=job.company,
-            role=job.role,
+            company=company,
+            role=role,
             jd=job.jd_text,
             status=DEFAULT_STATUS,
             link=job.link,

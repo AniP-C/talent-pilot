@@ -184,6 +184,19 @@
 
         <div class="card" id="job-info">Scanning page…</div>
 
+        <!-- Shown only when the page did not name the employer. Asking is far
+             better than guessing: a wrong company silently splits one
+             application into two rows that never reconcile. -->
+        <div id="company-prompt" class="card hidden">
+            <label for="company-input">Which company is this?</label>
+            <input type="text" id="company-input" placeholder="e.g. Nexus Labs"
+                   autocomplete="organization" style="margin-bottom: 0;">
+            <p class="muted" style="margin: 6px 0 0;">
+                This page didn't name the employer, and a wrong guess would break
+                email tracking for this application.
+            </p>
+        </div>
+
         <select id="profile-dropdown" class="hidden" aria-label="Resume profile"></select>
 
         <button id="btn-analyze" class="btn btn-primary hidden">🧠 Analyze match</button>

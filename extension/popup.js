@@ -40,11 +40,12 @@ function renderJobInfo(job) {
     box.textContent = "";
 
     const company = document.createElement("b");
-    company.textContent = job.company;
+    company.textContent = job.company || "Company not detected";
+    if (!job.company) company.className = "warning";
 
     const role = document.createElement("div");
     role.className = "muted";
-    role.textContent = job.role;
+    role.textContent = job.role || "Role not detected";
 
     box.append(company, role);
 }
@@ -348,23 +349,39 @@ async function scanActivePage() {
         return;
     }
 
-    if (!job || job.company === "Unknown Company") {
+    // A page with neither a company nor a role is not a job posting.
+    if (!job || (!job.company && !job.role)) {
         el("job-info").textContent = "No job posting detected on this page.";
+        show("company-prompt", false);
         return;
     }
 
     currentJob = job;
     renderJobInfo(job);
 
+    // The extractor returns an empty company rather than a guess when the page
+    // does not name the employer. Ask instead of inventing one — a wrong
+    // company means every later email about this job opens a duplicate row.
+    const needsCompany = !job.company;
+    show("company-prompt", needsCompany);
+
+    // Analysis only reads the job description, so it works without a company.
+    show("btn-analyze", true);
+
+    if (needsCompany) {
+        el("company-input").value = "";
+        el("company-input").focus();
+        show("btn-save", true);
+        return;
+    }
+
     const check = await send({ type: "CHECK_JOB", company: job.company, role: job.role });
 
     if (check.ok && check.data.exists) {
         setStatus(`Already tracked — status: ${check.data.status}`, "warning");
-        show("btn-analyze", true);
         return;
     }
 
-    show("btn-analyze", true);
     show("btn-save", true);
 }
 
@@ -395,9 +412,14 @@ el("btn-enable-site").addEventListener("click", () => {
 // Actions
 // ---------------------------------------------------------------------------
 function jobPayload() {
+    // A company typed into the prompt wins over whatever was scraped: the
+    // prompt only appears when extraction found nothing, and the user is the
+    // authority either way.
+    const typed = el("company-input").value.trim();
+
     return {
-        company: currentJob.company,
-        role: currentJob.role,
+        company: typed || currentJob.company,
+        role: currentJob.role || "Unknown Role",
         jd_text: currentJob.jd_text,
         link: currentJob.link,
         profile: el("profile-dropdown").value || null
@@ -426,11 +448,19 @@ el("btn-analyze").addEventListener("click", async () => {
 el("btn-save").addEventListener("click", async () => {
     if (!currentJob) return;
 
+    const payload = jobPayload();
+
+    if (!payload.company) {
+        setStatus("Please enter the company name before saving.", "warning");
+        el("company-input").focus();
+        return;
+    }
+
     const button = el("btn-save");
     button.disabled = true;
     setStatus("Saving…");
 
-    const response = await send({ type: "SAVE_JOB", job: jobPayload() });
+    const response = await send({ type: "SAVE_JOB", job: payload });
     button.disabled = false;
 
     if (!response.ok) {
@@ -441,6 +471,7 @@ el("btn-save").addEventListener("click", async () => {
 
     setStatus("✅ Saved to your tracker.", "success-text");
     show("btn-save", false);
+    show("company-prompt", false);
 });
 
 el("open-dashboard").addEventListener("click", async () => {

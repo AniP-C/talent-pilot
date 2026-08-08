@@ -158,62 +158,264 @@
     }
 
     // -----------------------------------------------------------------------
-    // Domain router: pull company/role/JD out of the page
+    // Job extraction
+    //
+    // Company is the field that matters most and the one that used to be
+    // wrong. The tracker's identity is (company, role), so a company holding
+    // a job title means later recruiter emails cannot find the application
+    // they belong to and open a duplicate instead.
+    //
+    // It used to be derived by splitting document.title, which silently
+    // assumed every board writes "Company - Role". Workable, Ashby and most
+    // company career pages write "Role - Company", so the split returned the
+    // role. Sources are now tried strongest first:
+    //
+    //   1. JSON-LD JobPosting  - a declared field, not a guess
+    //   2. og:site_name        - the site naming itself
+    //   3. per-board selectors - real elements, no string surgery
+    //   4. title patterns      - last resort, board-specific ordering
+    //
+    // Anything that comes back looking like a job title is discarded rather
+    // than stored.
     // -----------------------------------------------------------------------
+
+    // Mirrors _ROLE_WORDS in job_fields.py. The server rejects these too; this
+    // copy exists so the popup can warn before a request is ever sent.
+    const ROLE_WORDS = /\b(engineer|engineering|developer|designer|analyst|scientist|manager|director|architect|consultant|specialist|administrator|intern|internship|trainee|associate|lead|head|officer|executive|programmer|researcher|technician|recruiter|coordinator|strategist|apprentice|graduate|fresher|devops|sre)\b/i;
+
+    const ROLE_QUALIFIERS = /^(ai|ml|senior|sr|junior|jr|staff|principal|lead|chief|mid|intermediate|i|ii|iii|full|stack|fullstack|front|frontend|back|backend|end|web|mobile|android|ios|cloud|data|big|deep|machine|learning|generative|genai|mlops|platform|product|project|software|systems?|solutions?|security|quality|qa|test|support|analytics|python|java|javascript|react|node|golang|go|rust|of|and|the|a|an|&|-)$/i;
+
+    // Excludes software/systems/solutions/services/consulting on purpose:
+    // they read as corporate suffixes in "Acme Software" but as role
+    // qualifiers in "Software Engineer II". Keep in step with
+    // _COMPANY_MARKERS in job_fields.py.
+    const COMPANY_MARKERS = /\b(inc|llc|ltd|limited|plc|gmbh|corp|corporation|co|company|pvt|private|technologies|labs|group|holdings|ventures|partners|industries|sa|ag|bv|nv|ab|oy|srl|spa|pty)\b\.?/i;
+
+    const PLACEHOLDERS = new Set([
+        "", "-", "n/a", "na", "none", "null", "undefined", "unknown",
+        "unknown company", "unknown role", "company", "role", "job", "jobs",
+        "position", "career", "careers", "apply", "application",
+        "job application", "hiring", "we are hiring", "home"
+    ]);
+
+    // True when a string reads as a job title rather than an employer.
+    // Conservative on purpose: rejecting a real company is worse than letting
+    // an odd one through, so a corporate suffix or any word that is neither a
+    // role word nor a qualifier keeps the string.
+    function looksLikeRole(value) {
+        const cleaned = clean(value);
+        if (!cleaned) return false;
+        if (COMPANY_MARKERS.test(cleaned)) return false;
+        if (!ROLE_WORDS.test(cleaned)) return false;
+
+        return cleaned
+            .split(/[\s/,|·–—-]+/)
+            .filter(Boolean)
+            .every((word) => ROLE_WORDS.test(word) || ROLE_QUALIFIERS.test(word));
+    }
+
+    function isPlaceholder(value) {
+        return PLACEHOLDERS.has(clean(value).toLowerCase());
+    }
+
+    // Accept a candidate company only if it is informative and is not the role.
+    function acceptCompany(candidate, role) {
+        const cleaned = clean(candidate);
+        if (!cleaned || cleaned.length > 200) return "";
+        if (isPlaceholder(cleaned)) return "";
+        if (role && cleaned.toLowerCase() === clean(role).toLowerCase()) return "";
+        if (looksLikeRole(cleaned)) return "";
+        return cleaned;
+    }
+
+    // --- Source 1: schema.org JobPosting ------------------------------------
+    // Greenhouse, Lever, Ashby, Workable and most ATS-hosted career pages all
+    // emit this. hiringOrganization.name is declared data rather than a
+    // guess, which makes it immune to markup and title-format churn.
+    function fromJsonLd() {
+        const found = { company: "", role: "", jd_text: "" };
+
+        for (const node of document.querySelectorAll('script[type="application/ld+json"]')) {
+            let parsed;
+            try {
+                parsed = JSON.parse(node.textContent);
+            } catch {
+                continue; // a malformed block must not abort the others
+            }
+
+            // Blocks may be a single object, an array, or an @graph wrapper.
+            const candidates = []
+                .concat(parsed)
+                .flatMap((entry) => (entry && entry["@graph"]) || entry)
+                .filter(Boolean);
+
+            for (const entry of candidates) {
+                if (entry["@type"] !== "JobPosting") continue;
+
+                const org = entry.hiringOrganization;
+                found.company = clean(typeof org === "string" ? org : org?.name || "");
+                found.role = clean(entry.title || "");
+
+                if (entry.description) {
+                    // description is HTML; render it to text without ever
+                    // attaching it to the live document.
+                    const holder = document.createElement("div");
+                    holder.innerHTML = entry.description;
+                    found.jd_text = clean(holder.textContent || "");
+                }
+
+                if (found.company || found.role) return found;
+            }
+        }
+
+        return found;
+    }
+
+    // --- Source 2: Open Graph ------------------------------------------------
+    function fromMeta() {
+        return clean(
+            document.querySelector('meta[property="og:site_name"]')?.content || ""
+        );
+    }
+
+    // --- Source 3+4: per-board adapters -------------------------------------
+    // Declarative so a board changing its markup is a one-line edit here
+    // rather than a new branch in a growing if/else chain.
+    //
+    // `titleCompany` receives document.title and returns the company part.
+    // Each is written against that board's actual title format instead of
+    // assuming a shared one.
+    const ADAPTERS = [
+        {
+            match: /linkedin\.com$/,
+            company: ".job-details-jobs-unified-top-card__company-name, .topcard__org-name-link, .pr2.t-14",
+            role: ".job-details-jobs-unified-top-card__job-title, .topcard__title, h1",
+            jd: ".jobs-description__content, #job-details, .description__text",
+            // "Role | Company | LinkedIn"
+            titleCompany: (t) => t.split("|")[1] || ""
+        },
+        {
+            match: /greenhouse\.io$/,
+            company: '.company-name, [class*="companyName"], header img[alt]',
+            role: ".app-title, .job__title h1, h1",
+            jd: "#content, .job__description, #main, .accessible-wrapper",
+            // "Job Application for <Role> at <Company>"
+            titleCompany: (t) => t.split(/\bat\s+/i).slice(1).join(" at ") || ""
+        },
+        {
+            match: /lever\.co$/,
+            company: '.main-header-logo img[alt], [class*="companyName"]',
+            role: ".posting-headline h2, h2",
+            jd: ".posting-details, .section-wrapper, main",
+            // "Company - Role"  (company first on Lever)
+            titleCompany: (t) => t.split(" - ")[0] || ""
+        },
+        {
+            match: /ashbyhq\.com$/,
+            company: '[class*="companyName"], header img[alt]',
+            role: 'h1, [class*="jobTitle"]',
+            jd: '[class*="descriptionText"], main',
+            // "Role @ Company", and "Role - Company" on some boards: the
+            // company is the LAST segment, never the first.
+            titleCompany: (t) => t.split(/\s+[@|]\s+|\s+-\s+/).slice(1).pop() || ""
+        },
+        {
+            match: /workable\.com$/,
+            company: '[data-ui="company-name"], [class*="companyName"], header img[alt]',
+            role: '[data-ui="job-title"], h1',
+            jd: '[data-ui="job-description"], main',
+            // "Role - Company"  (company LAST, the original bug)
+            titleCompany: (t) => t.split(" - ").slice(1).join(" - ") || ""
+        },
+        {
+            match: /(wellfound\.com|angel\.co)$/,
+            company: '[class*="company"] h1, a[href^="/company/"]',
+            role: 'h2, [class*="jobTitle"]',
+            jd: null,
+            // "Role at Company"
+            titleCompany: (t) => t.split(/\s+at\s+/i).slice(1).join(" at ") || ""
+        }
+    ];
+
+    // Fallback for any other origin the user enables on demand. Company career
+    // pages overwhelmingly write "<Role> - <Company>" or "<Role> | <Company>",
+    // so the LAST segment is the better guess — the opposite of the old code.
+    const GENERIC_ADAPTER = {
+        company: 'meta[property="og:site_name"], [class*="company-name"]',
+        role: "h1",
+        jd: null,
+        titleCompany: (t) => {
+            const parts = t.split(/\s+[|–—]\s+|\s+-\s+/).map(clean).filter(Boolean);
+            if (parts.length < 2) return "";
+            // Trim boilerplate tails like "Careers" or "Jobs".
+            const tail = parts[parts.length - 1];
+            const stripped = clean(tail.replace(/\b(careers?|jobs?|hiring|job board)\b/gi, ""));
+            return stripped || tail;
+        }
+    };
+
+    function adapterFor(hostname) {
+        return ADAPTERS.find((entry) => entry.match.test(hostname)) || GENERIC_ADAPTER;
+    }
+
     function extractJobData() {
-        const domain = location.hostname;
+        const adapter = adapterFor(location.hostname);
         let company = "";
         let role = "";
         let jd_text = "";
+        let companySource = "none";
 
         try {
-            if (domain.includes("linkedin.com")) {
-                company = text(".job-details-jobs-unified-top-card__company-name") || text(".pr2.t-14");
-                role = text(".job-details-jobs-unified-top-card__job-title") || text("h1");
-                jd_text = text(".jobs-description__content, #job-details");
-            } else if (domain.includes("greenhouse.io")) {
-                role = text(".app-title h1, h1");
-                company = text(".company-name, .logo-container").replace(/^at\s+/i, "") ||
-                    document.title.split(" - ")[0];
-                jd_text = text("#content, #main, .accessible-wrapper");
-            } else if (domain.includes("lever.co")) {
-                role = text(".posting-headline h2");
-                company = document.title.split("-")[0];
-                jd_text = text(".posting-details") || text(".section-wrapper");
-            } else if (domain.includes("ashbyhq.com")) {
-                role = text("h1");
-                company = document.title.split(" @ ")[1] || document.title.split(" - ")[0];
-                jd_text = text('[class*="descriptionText"]') || text("main");
-            } else if (domain.includes("workable.com")) {
-                role = text("h1");
-                company = text('[data-ui="company-name"]') || document.title.split(" - ")[0];
-                jd_text = text("main") || text('[data-ui="job-description"]');
-            } else if (domain.includes("wellfound.com") || domain.includes("angel.co")) {
-                role = text("h2") || text("h1");
-                company = text("h1");
-                if (!company || company === role) {
-                    company = document.title.split(" at ")[1] || document.title.split(" | ")[0];
+            const structured = fromJsonLd();
+
+            role = structured.role || text(adapter.role) || text("h1");
+            jd_text = structured.jd_text || (adapter.jd ? text(adapter.jd) : "") || collectParagraphs();
+
+            // Strongest source first; each candidate must survive acceptCompany.
+            const candidates = [
+                ["json-ld", structured.company],
+                ["selector", textOrAttr(adapter.company)],
+                ["og:site_name", fromMeta()],
+                ["title", adapter.titleCompany(document.title || "")]
+            ];
+
+            for (const [source, value] of candidates) {
+                const accepted = acceptCompany(value, role);
+                if (accepted) {
+                    company = accepted;
+                    companySource = source;
+                    break;
                 }
-                jd_text = collectParagraphs();
-            } else {
-                role = text("h1");
-                company = document.title.split(/[-|]/)[0];
-                jd_text = collectParagraphs();
             }
         } catch (err) {
             console.error("[Job Copilot] extraction failed:", err);
         }
 
+        role = clean(role);
+
+        // Reporting no company beats reporting a wrong one: the popup can ask
+        // the user to type it, whereas a silently wrong value becomes a
+        // corrupt row that only surfaces weeks later as a duplicate.
         return {
-            company: clean(company) || "Unknown Company",
-            role: clean(role) || "Unknown Role",
+            company: company || "",
+            role: role && !isPlaceholder(role) ? role : "",
             jd_text: clean(jd_text).slice(0, 8000),
-            link: location.href
+            link: location.href,
+            company_source: companySource
         };
     }
 
     function text(selector) {
+        if (!selector) return "";
         return document.querySelector(selector)?.innerText || "";
+    }
+
+    // Logos carry the company in alt text where no text node exists.
+    function textOrAttr(selector) {
+        if (!selector) return "";
+        const el = document.querySelector(selector);
+        if (!el) return "";
+        return clean(el.innerText || el.getAttribute("alt") || el.content || "");
     }
 
     function collectParagraphs() {

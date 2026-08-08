@@ -5,11 +5,15 @@ inside that user's workspace rather than in a shared token.json at the repo
 root.
 """
 
+import base64
+import binascii
 import json
 import os
+import re
 import secrets
 import sys
 import time
+from html import unescape
 from typing import Optional
 
 from google.auth.transport.requests import Request
@@ -328,8 +332,97 @@ def is_high_probability_job_email(sender: str, subject: str, snippet: str) -> bo
     return any(phrase in content_lower for phrase in high_signal_phrases)
 
 
+# The search that decides which mail is even considered.
+#
+# The previous version required one of six words in the *subject*, which threw
+# away most real recruiter mail: "Thank you for your interest", "Next steps",
+# "Congratulations!" and "Your offer letter" all match none of them, and a
+# message never fetched can never be classified.
+#
+# Broadening the net does not increase AI cost. Two things bound it: the rule
+# filter below runs before any model call and is free, and GMAIL_MAX_RESULTS
+# caps how many messages a single sync will look at no matter how many match.
+_SUBJECT_TERMS = (
+    "application OR applying OR applied OR candidacy OR candidate OR "
+    "interview OR assessment OR offer OR opportunity OR recruiter OR "
+    "recruitment OR hiring OR role OR position OR opening OR vacancy OR "
+    'status OR update OR "next steps" OR "thank you for" OR shortlisted OR '
+    "congratulations OR onboarding"
+)
+
+# Senders that are nearly always about an application regardless of subject.
+_SENDER_TERMS = (
+    "greenhouse.io OR lever.co OR myworkdayjobs.com OR smartrecruiters.com OR "
+    "icims.com OR successfactors.com OR taleo.net OR bamboohr.com OR "
+    "ashbyhq.com OR workable.com OR jobvite.com OR hackerrank.com OR "
+    "careers OR recruiting OR talent"
+)
+
+# How much message body to keep. The body is where the company name usually
+# lives — the old metadata-only fetch meant a Lever or Greenhouse confirmation
+# arrived with nothing but a role in it, and was discarded as "Unknown".
+# Capped because prompt size drives token cost, and the useful content of a
+# recruiter email is always near the top.
+MAX_BODY_CHARS = 1500
+
+
+def _decode_part(data: str) -> str:
+    """Decode one base64url MIME part, tolerating Gmail's padding."""
+    if not data:
+        return ""
+    try:
+        return base64.urlsafe_b64decode(data + "===").decode("utf-8", errors="replace")
+    except (binascii.Error, ValueError):
+        return ""
+
+
+def _extract_body(payload: dict) -> str:
+    """Pull readable text out of a Gmail payload.
+
+    Walks the MIME tree preferring text/plain; falls back to text/html with
+    the tags stripped, because plenty of recruiter mail is HTML-only.
+    """
+    plain: list[str] = []
+    html: list[str] = []
+
+    def walk(part: dict) -> None:
+        mime = part.get("mimeType", "")
+        body = part.get("body", {}) or {}
+
+        if mime == "text/plain":
+            plain.append(_decode_part(body.get("data", "")))
+        elif mime == "text/html":
+            html.append(_decode_part(body.get("data", "")))
+
+        for child in part.get("parts", []) or []:
+            walk(child)
+
+    walk(payload)
+
+    text = "\n".join(filter(None, plain)).strip()
+
+    if not text and html:
+        raw = "\n".join(filter(None, html))
+        # Drop script/style wholesale before stripping the remaining tags, or
+        # their contents survive as noise.
+        raw = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", raw)
+        raw = re.sub(r"(?s)<[^>]+>", " ", raw)
+        text = unescape(raw)
+
+    # Quoted replies and signature blocks add tokens without adding signal.
+    text = re.split(r"\n-{2,}\s*\n|\nOn .{0,80} wrote:", text)[0]
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+
+    return text[:MAX_BODY_CHARS]
+
+
 def fetch_job_emails(user_id: int, max_results: int = None) -> list[dict]:
     """Fetch recent mail, filter it, and return the likely job-related messages.
+
+    Returned **oldest first**. Gmail lists newest first, but an application
+    moves forward through time, so replaying a batch in arrival order is what
+    lets the tracker end on the latest state instead of the earliest.
 
     Each entry includes the Gmail ``id`` so the caller can skip messages it has
     already classified.
@@ -338,8 +431,11 @@ def fetch_job_emails(user_id: int, max_results: int = None) -> list[dict]:
     max_results = max_results or GMAIL_MAX_RESULTS
 
     search_query = (
-        "subject:(application OR update OR status OR role OR position OR interview) "
-        f"newer_than:{GMAIL_LOOKBACK_DAYS}d"
+        f"(subject:({_SUBJECT_TERMS}) OR from:({_SENDER_TERMS})) "
+        f"newer_than:{GMAIL_LOOKBACK_DAYS}d "
+        # Categories Gmail has already judged to be bulk mail. Excluding them
+        # here is free and removes most of what the rule filter would drop.
+        "-category:promotions -category:social -in:chats"
     )
 
     try:
@@ -361,29 +457,36 @@ def fetch_job_emails(user_id: int, max_results: int = None) -> list[dict]:
             msg_data = (
                 service.users()
                 .messages()
-                .get(
-                    userId="me",
-                    id=msg["id"],
-                    format="metadata",
-                    metadataHeaders=["Subject", "From"],
-                )
+                .get(userId="me", id=msg["id"], format="full")
                 .execute()
             )
 
-            headers = msg_data["payload"]["headers"]
+            payload = msg_data.get("payload", {}) or {}
+            headers = payload.get("headers", [])
             subject = _header(headers, "Subject", "No Subject")
             sender = _header(headers, "From", "Unknown Sender")
             snippet = msg_data.get("snippet", "")
+            body = _extract_body(payload)
 
-            if is_high_probability_job_email(sender, subject, snippet):
+            # The filter sees the body too, so a genuine recruiter mail whose
+            # subject is bland is no longer judged on the subject alone.
+            if is_high_probability_job_email(sender, subject, f"{snippet}\n{body}"):
                 valid_emails.append(
                     {
                         "id": msg["id"],
                         "sender": sender,
                         "subject": subject,
                         "snippet": snippet,
+                        "body": body,
+                        # Epoch milliseconds, as a string, straight from Gmail.
+                        "internal_date": int(msg_data.get("internalDate", 0)),
                     }
                 )
+
+        # Oldest first: see the docstring. Without this the last email applied
+        # is the earliest one, so an offer gets overwritten by the original
+        # "we received your application".
+        valid_emails.sort(key=lambda email: email["internal_date"])
 
         logger.info(
             "Gmail scan for user %s: %s fetched, %s passed the filter",
@@ -401,6 +504,8 @@ def fetch_job_emails(user_id: int, max_results: int = None) -> list[dict]:
 
 
 def _header(headers: list[dict], name: str, default: str) -> str:
+    """Case-insensitive header lookup — Gmail does not normalise casing."""
+    target = name.lower()
     return next(
-        (header["value"] for header in headers if header["name"] == name), default
+        (h["value"] for h in headers if h.get("name", "").lower() == target), default
     )
