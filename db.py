@@ -7,6 +7,7 @@ Rows are returned as plain dicts keyed by column name — callers must never
 depend on column order, because migrations append columns.
 """
 
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -23,7 +24,8 @@ from config import (
 
 # Bumped whenever the schema changes; see _migrate().
 #   v1 -> v2  adds status_history
-SCHEMA_VERSION = 2
+#   v2 -> v3  adds the recruiter contact on each application
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -37,6 +39,12 @@ CREATE TABLE IF NOT EXISTS jobs (
     notes        TEXT,
     source       TEXT NOT NULL DEFAULT 'Manual',
     resume_used  TEXT,
+    -- Who to reply to. Inbox sync knows the sender of every email it
+    -- classifies and used to discard it, so "who is handling this?" was a
+    -- question the tracker could not answer about its own applications.
+    contact_name    TEXT,
+    contact_email   TEXT,
+    last_contact_at TEXT,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
@@ -90,6 +98,9 @@ JOB_COLUMNS = [
     "notes",
     "source",
     "resume_used",
+    "contact_name",
+    "contact_email",
+    "last_contact_at",
     "created_at",
     "updated_at",
 ]
@@ -176,6 +187,20 @@ def _migrate(conn: sqlite3.Connection, db_path) -> None:
 
         if seeded:
             logger.info("Backfilled stage history for %s job(s) in %s", seeded, db_path)
+
+    if current < 3:
+        # _SCHEMA declares these, but CREATE TABLE IF NOT EXISTS is a no-op on
+        # a database that already has a jobs table, so an existing workspace
+        # needs them added. Checked against the live column list rather than
+        # catching the duplicate-column error, so a fresh database — where
+        # _SCHEMA did create them and user_version is still 0 — passes through
+        # here without either failing or silently swallowing a real problem.
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
+
+        for column in ("contact_name", "contact_email", "last_contact_at"):
+            if column not in existing:
+                conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT")
+                logger.info("Added jobs.%s to %s", column, db_path)
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     logger.info(
@@ -455,6 +480,23 @@ def _find_job_for_email(
     return None
 
 
+# Mailboxes that exist to send and not to receive. Storing one as the contact
+# is worse than storing nothing: it reads as somebody to reply to.
+_NOREPLY_LOCAL = re.compile(
+    r"^(no-?reply|do-?not-?reply|donotreply|notification|notifications|"
+    r"automated|auto|mailer|bounce|postmaster|noreply)",
+    re.IGNORECASE,
+)
+
+
+def is_replyable(address: str) -> bool:
+    """True when an address looks like a person rather than a send-only robot."""
+    address = (address or "").strip()
+    if "@" not in address:
+        return False
+    return not _NOREPLY_LOCAL.match(address.split("@", 1)[0])
+
+
 def update_job_from_email(
     company_name: str,
     category: str,
@@ -463,12 +505,19 @@ def update_job_from_email(
     *,
     db_path,
     role: str = "",
+    contact_name: str = "",
+    contact_email: str = "",
 ) -> str:
     """Apply an AI-classified email to the workspace.
 
     Returns ``"updated"`` when an existing application moved forward,
     ``"noted"`` when the email was recorded but the status was left alone
     (a backwards move), or ``"created"`` when a new application was tracked.
+
+    The sender is recorded as the application's contact when it looks like a
+    person. ``last_contact_at`` moves either way — an automated "we received
+    your application" is still the employer making contact, and that is what
+    the follow-up view measures silence against.
     """
     company_name = (company_name or "").strip()
     if not company_name:
@@ -476,6 +525,17 @@ def update_job_from_email(
 
     category = _validate_status(category)
     role = (role or "").strip()
+
+    # NULL rather than "" so COALESCE below keeps a human contact already on
+    # the record when a later no-reply message arrives about the same job.
+    contact_email = (contact_email or "").strip()
+    if is_replyable(contact_email):
+        new_contact_email = contact_email
+        new_contact_name = (contact_name or "").strip() or contact_email
+    else:
+        new_contact_email = None
+        new_contact_name = None
+
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     note = f"[{timestamp} | {category}]\nSubject: {subject}\nAI Note: {reasoning}"
     now = _utcnow()
@@ -489,17 +549,26 @@ def update_job_from_email(
             previous = row["status"]
             moves_forward = advances(previous, category)
 
+            contact_update = (
+                "contact_name = COALESCE(?, contact_name), "
+                "contact_email = COALESCE(?, contact_email), "
+                "last_contact_at = ?"
+            )
+            contact_values = (new_contact_name, new_contact_email, now)
+
             if moves_forward and previous != category:
                 conn.execute(
-                    "UPDATE jobs SET status = ?, notes = ?, updated_at = ? WHERE id = ?",
-                    (category, combined, now, row["id"]),
+                    f"UPDATE jobs SET status = ?, notes = ?, updated_at = ?, "
+                    f"{contact_update} WHERE id = ?",
+                    (category, combined, now, *contact_values, row["id"]),
                 )
             else:
                 # The note is still worth keeping even when the status is not
                 # changed — it is evidence of what arrived and when.
                 conn.execute(
-                    "UPDATE jobs SET notes = ?, updated_at = ? WHERE id = ?",
-                    (combined, now, row["id"]),
+                    f"UPDATE jobs SET notes = ?, updated_at = ?, "
+                    f"{contact_update} WHERE id = ?",
+                    (combined, now, *contact_values, row["id"]),
                 )
 
             if previous != category:
@@ -528,8 +597,9 @@ def update_job_from_email(
                 """
                 INSERT INTO jobs (
                     company, role, status, date_applied, notes, source,
+                    contact_name, contact_email, last_contact_at,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     company_name,
@@ -538,6 +608,9 @@ def update_job_from_email(
                     _today(),
                     note,
                     "Email Sync",
+                    new_contact_name,
+                    new_contact_email,
+                    now,
                     now,
                     now,
                 ),
@@ -555,9 +628,15 @@ def update_job_from_email(
             ).fetchone()
 
             conn.execute(
-                "UPDATE jobs SET notes = ?, updated_at = ? WHERE id = ?",
+                "UPDATE jobs SET notes = ?, updated_at = ?, "
+                "contact_name = COALESCE(?, contact_name), "
+                "contact_email = COALESCE(?, contact_email), "
+                "last_contact_at = ? WHERE id = ?",
                 (
                     f"{existing_row['notes'] or ''}\n\n{note}".strip(),
+                    now,
+                    new_contact_name,
+                    new_contact_email,
                     now,
                     existing_row["id"],
                 ),
@@ -621,6 +700,97 @@ def check_if_applied(company: str, role: str, *, db_path) -> tuple[bool, Optiona
         return False, None
 
     return (True, row["status"]) if row else (False, None)
+
+
+def get_followups(*, db_path, quiet_after_days: int = 10) -> list[dict]:
+    """Live applications that have gone quiet, longest silence first.
+
+    The tracker could say where every application stood but not which ones
+    were drifting, which is the question that actually changes what you do
+    next. Silence is measured from the most recent real signal — the last
+    email from the employer, the last stage change, or failing both the date
+    applied — so an application that moved yesterday is not reported as stale
+    merely because it was submitted months ago.
+
+    Terminal statuses are excluded: an offer or a rejection is not waiting on
+    anybody.
+    """
+    with connect(db_path) as conn:
+        placeholders = ", ".join("?" for _ in ACTIVE_STATUSES)
+        rows = conn.execute(
+            f"""
+            SELECT j.id, j.company, j.role, j.status, j.link,
+                   j.date_applied, j.contact_name, j.contact_email,
+                   MAX(
+                       COALESCE(j.last_contact_at, ''),
+                       COALESCE((SELECT MAX(h.occurred_at) FROM status_history h
+                                 WHERE h.job_id = j.id), ''),
+                       COALESCE(j.date_applied, ''),
+                       COALESCE(j.created_at, '')
+                   ) AS last_activity
+            FROM jobs j
+            WHERE j.status IN ({placeholders})
+            ORDER BY last_activity ASC
+            """,
+            tuple(sorted(ACTIVE_STATUSES)),
+        ).fetchall()
+
+    today = datetime.now(timezone.utc)
+    followups = []
+
+    for row in rows:
+        job = dict(row)
+        # Timestamps are written in two shapes — a full UTC stamp from
+        # _utcnow() and a bare date from _today() — so only the date part is
+        # comparable across both.
+        stamp = (job.pop("last_activity", "") or "")[:10]
+
+        try:
+            last = datetime.strptime(stamp, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            # Undatable rows are surfaced rather than hidden: a job with no
+            # usable timestamp is exactly the kind that gets forgotten.
+            job["days_quiet"] = None
+            job["last_activity"] = None
+            followups.append(job)
+            continue
+
+        job["days_quiet"] = (today - last).days
+        job["last_activity"] = stamp
+        followups.append(job)
+
+    # None sorts first: unknown means "look at this", not "ignore it".
+    followups.sort(key=lambda j: (j["days_quiet"] is not None, -(j["days_quiet"] or 0)))
+
+    return [
+        job for job in followups
+        if job["days_quiet"] is None or job["days_quiet"] >= quiet_after_days
+    ]
+
+
+def get_job_by_identity(company: str, role: str, *, db_path) -> Optional[dict]:
+    """The tracked application for a company+role pair, or None.
+
+    Used when drafting an answer. The application form is usually a different
+    page from the posting — often an iframe with none of the description in it
+    — so what was captured when the job was saved is better context than
+    whatever the form page can see.
+    """
+    if not Path(db_path).exists():
+        return None
+
+    try:
+        with connect(db_path) as conn:
+            row = conn.execute(
+                f"SELECT {', '.join(JOB_COLUMNS)} FROM jobs "
+                "WHERE LOWER(company) = LOWER(?) AND LOWER(role) = LOWER(?)",
+                ((company or "").strip(), (role or "").strip()),
+            ).fetchone()
+    except sqlite3.OperationalError:
+        # The file exists but the schema has not been created yet.
+        return None
+
+    return dict(row) if row else None
 
 
 def get_stats(*, db_path) -> dict:

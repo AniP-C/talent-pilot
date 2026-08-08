@@ -20,6 +20,13 @@ ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "extension"
 DIST = ROOT / "dist"
 
+# The Windows console defaults to cp1252, which cannot encode the em dash in
+# the extension's name or a non-ASCII character in the project path — and the
+# resulting UnicodeEncodeError killed the script *after* the zip was written,
+# reporting failure for a build that had actually succeeded.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 # Anything matching these never enters the package. rules.js is listed even
 # though it no longer exists: it used to hold real personal details, and an old
 # working copy on someone's disk must not be able to ship.

@@ -37,7 +37,7 @@ const RULES = [
     literal: true, answer: "Yes", question: "Driving licence", kind: "text" },
 ];
 
-function build(html, { rules = RULES } = {}) {
+function build(html, { rules = RULES, signedOut = false, storage = {} } = {}) {
   const dom = new JSDOM(
     `<!doctype html><html><head><title>AI Engineer - Nexus Labs</title></head>` +
     `<body>${html}</body></html>`,
@@ -46,20 +46,47 @@ function build(html, { rules = RULES } = {}) {
 
   const w = dom.window;
   const sent = [];
+  const listeners = [];
+
+  // Mutable so a test can change what the API would return and then announce
+  // it, the way signing in or saving an answer does in the real extension.
+  const state = { rules, signedOut };
 
   w.chrome = {
     runtime: {
-      onMessage: { addListener: () => {} },
+      onMessage: { addListener: (fn) => listeners.push(fn) },
       sendMessage: async (msg) => {
         sent.push(msg);
-        if (msg.type === "GET_AUTOFILL") return { ok: true, data: { rules } };
+        if (msg.type === "GET_AUTOFILL") {
+          return state.signedOut
+            ? { ok: false, error: "Please sign in.", needsAuth: true }
+            : { ok: true, data: { rules: state.rules } };
+        }
         if (msg.type === "GENERATE_ANSWER") {
           return { ok: true, data: { suggested_answer: "A drafted answer." } };
         }
         return { ok: true, data: {} };
       },
     },
-    storage: { local: { get: async () => ({}), set: async () => {} } },
+    // A real store, not a stub returning {}: the offer to track a submitted
+    // application is written here and read back by whichever page loads next,
+    // so an amnesiac stub would test nothing.
+    storage: {
+      local: {
+        get: async (key) => {
+          const names = typeof key === "string" ? [key] : Object.keys(key || storage);
+          const out = {};
+          names.forEach((name) => {
+            if (name in storage) out[name] = storage[name];
+          });
+          return out;
+        },
+        set: async (values) => Object.assign(storage, values),
+        remove: async (key) => {
+          [].concat(key).forEach((name) => delete storage[name]);
+        },
+      },
+    },
   };
 
   Object.defineProperty(w.HTMLElement.prototype, "innerText", {
@@ -68,8 +95,32 @@ function build(html, { rules = RULES } = {}) {
     configurable: true,
   });
 
+  // What background.js does when the answer bank changes underneath an open
+  // page. Also how the popup asks the page what it extracted.
+  const fire = (message) => {
+    let reply;
+    listeners.forEach((fn) => fn(message, {}, (value) => { reply = value; }));
+    return reply;
+  };
+
+  // Injecting the same frame twice is normal: the manifest registration and
+  // the dynamic one for granted sites overlap, and the popup tops up stale tabs.
+  const reinject = () => w.eval(code);
+
   w.eval(code);
-  return { w, dom, sent };
+  return { w, dom, sent, state, fire, reinject, storage };
+}
+
+// jsdom does not run form submission, so the event is dispatched directly —
+// which is also what a form calling preventDefault and posting over XHR does.
+function submitForm(w, selector = "form") {
+  w.document
+    .querySelector(selector)
+    .dispatchEvent(new w.Event("submit", { bubbles: true, cancelable: true }));
+}
+
+function saveBar(w) {
+  return w.document.querySelector(".ai-copilot-save-bar");
 }
 
 // scheduleScan() debounces by 400ms, so anything shorter observes an empty page.
@@ -316,6 +367,267 @@ function suggestions(w) {
     check("the drafted answer is saved back to the bank",
       sent.some(m => m.type === "SAVE_CUSTOM_ANSWER"),
       `calls=${JSON.stringify(sent.map(m => m.type))}`);
+  }
+
+  // ---- signing in after the page loaded still produces suggestions ------
+  // The rules used to be fetched exactly once. Opening a job page and then
+  // signing in left that tab permanently empty, which is indistinguishable
+  // from the feature being broken.
+  {
+    const { w, state, fire } = build(
+      `<div><label for="n">First Name</label><input id="n"></div>`,
+      { signedOut: true }
+    );
+    await settle();
+    check("signed out, a job page shows no suggestions",
+      suggestions(w).length === 0, `got ${suggestions(w).length}`);
+
+    state.signedOut = false;
+    fire({ type: "AUTOFILL_CHANGED" });
+    await settle();
+
+    check("signing in fills an already-open page without a reload",
+      suggestions(w).length === 1,
+      `got ${suggestions(w).length} after AUTOFILL_CHANGED`);
+  }
+
+  // ---- signing out takes the answers back off the page ------------------
+  {
+    const { w, state, fire } = build(
+      `<div><label for="n">First Name</label><input id="n"></div>`
+    );
+    await settle();
+    check("signed in, the suggestion is present", suggestions(w).length === 1);
+
+    state.signedOut = true;
+    fire({ type: "AUTOFILL_CHANGED" });
+    await settle();
+
+    check("signing out removes suggestions already on the page",
+      suggestions(w).length === 0, `got ${suggestions(w).length}`);
+  }
+
+  // ---- a newly saved answer reaches other open tabs ---------------------
+  {
+    const { w, state, fire } = build(
+      `<div><label for="q">Do you hold a valid driving licence? (UK)</label><input id="q"></div>`,
+      { rules: [] }
+    );
+    await settle();
+    check("an empty bank suggests nothing", suggestions(w).length === 0);
+
+    state.rules = RULES;
+    fire({ type: "AUTOFILL_CHANGED" });
+    await settle();
+
+    check("an answer saved elsewhere appears without a reload",
+      suggestions(w).some(b => b.textContent.includes("Driving licence")),
+      `got: ${suggestions(w).map(b => b.textContent).join(" | ")}`);
+  }
+
+  // ---- double injection must not double the suggestions -----------------
+  // The manifest registration and the dynamic one for granted sites overlap,
+  // and the popup injects again into tabs that predate the grant.
+  {
+    const { w, reinject } = build(
+      `<div><label for="n">First Name</label><input id="n"></div>`
+    );
+    await settle();
+    reinject();
+    await settle();
+    check("injecting the same frame twice yields one suggestion",
+      suggestions(w).length === 1, `got ${suggestions(w).length}`);
+  }
+
+  // ---- only the top frame answers the popup's extraction request --------
+  // With all_frames injection every iframe runs this script, and whichever
+  // replied first would win — an ad frame could out-race the real posting.
+  {
+    const { fire } = build(`<h1>AI Engineer</h1>`);
+    await settle();
+    const reply = fire({ action: "extract_job" });
+    check("the top frame answers the extraction request",
+      reply && reply.role === "AI Engineer" && reply.company === "Nexus Labs",
+      `got ${JSON.stringify(reply)}`);
+  }
+
+  // ---- drafting buttons stay off pages that cannot use them -------------
+  {
+    const { w } = build(
+      `<form><label for="t">Describe a time you led a project</label>` +
+      `<textarea id="t"></textarea></form>`,
+      { signedOut: true }
+    );
+    await settle();
+    const buttons = Array.from(w.document.querySelectorAll("button"))
+      .filter(b => b.textContent.includes("Generate AI Answer"));
+    check("signed out, no drafting button is offered",
+      buttons.length === 0, `got ${buttons.length}`);
+  }
+
+  // A bare textarea is a comment box or a message composer, not an
+  // application question.
+  {
+    const { w } = build(`<textarea id="t"></textarea>`);
+    await settle();
+    const buttons = Array.from(w.document.querySelectorAll("button"))
+      .filter(b => b.textContent.includes("Generate AI Answer"));
+    check("an unlabelled textarea outside a form gets no drafting button",
+      buttons.length === 0, `got ${buttons.length}`);
+  }
+
+  // ---- submitting an application offers to track it ---------------------
+  // Saving was a manual click in the popup, so anything submitted without
+  // remembering to click it never reached the tracker at all.
+  const APPLICATION_FORM = `
+    <h1>AI Engineer</h1>
+    <form>
+      <label for="e">Email</label><input id="e">
+      <label for="r">Resume</label><input id="r" type="file">
+      <label for="w">Why do you want this role?</label><textarea id="w"></textarea>
+      <button type="submit">Submit application</button>
+    </form>`;
+
+  {
+    const { w } = build(APPLICATION_FORM);
+    await settle();
+    check("no save bar before submitting", !saveBar(w));
+
+    submitForm(w);
+    await settle();
+
+    const bar = saveBar(w);
+    check("submitting an application offers to track it", !!bar,
+      "no save bar appeared");
+    check("the offer names the employer",
+      bar && bar.textContent.includes("Nexus Labs"),
+      `bar said: ${bar && bar.textContent}`);
+  }
+
+  // ---- but nothing is saved without a click -----------------------------
+  {
+    const { w, sent } = build(APPLICATION_FORM);
+    await settle();
+    submitForm(w);
+    await settle();
+
+    check("submitting alone never saves the job",
+      !sent.some(m => m.type === "SAVE_JOB"),
+      `calls=${JSON.stringify(sent.map(m => m.type))}`);
+
+    saveBar(w).querySelector("button").click();
+    await settle();
+
+    check("clicking Save sends the job to the tracker",
+      sent.some(m => m.type === "SAVE_JOB"),
+      `calls=${JSON.stringify(sent.map(m => m.type))}`);
+  }
+
+  // ---- a search box is not an application -------------------------------
+  {
+    const { w } = build(`<form><input id="q" placeholder="Search jobs"></form>`);
+    await settle();
+    submitForm(w);
+    await settle();
+    check("a one-field search form raises no offer", !saveBar(w));
+  }
+
+  // ---- the offer survives the page navigating away ----------------------
+  // Submitting usually navigates to a confirmation page, which would destroy
+  // a bar rendered on the spot.
+  {
+    const shared = {};
+    const first = build(APPLICATION_FORM, { storage: shared });
+    await settle();
+    submitForm(first.w);
+    await settle();
+    check("the pending offer is written to storage",
+      !!shared.pendingSave && shared.pendingSave.company === "Nexus Labs",
+      `stored: ${JSON.stringify(shared.pendingSave)}`);
+
+    // The confirmation page: a new document, same extension storage.
+    const next = build(`<h1>Thanks for applying</h1>`, { storage: shared });
+    await settle();
+    check("the next page picks the offer back up", !!saveBar(next.w),
+      "no save bar on the page after submitting");
+  }
+
+  // ---- a stale offer is dropped rather than shown -----------------------
+  {
+    const shared = {
+      pendingSave: {
+        company: "Nexus Labs", role: "AI Engineer", jd_text: "", link: "x",
+        at: Date.now() - 60 * 60 * 1000,
+      },
+    };
+    const { w } = build(`<h1>Some other page</h1>`, { storage: shared });
+    await settle();
+    check("an hour-old offer is not raised", !saveBar(w));
+    check("and it is cleared from storage", !shared.pendingSave);
+  }
+
+  // ---- signed out, submitting offers nothing ----------------------------
+  {
+    const { w } = build(APPLICATION_FORM, { signedOut: true });
+    await settle();
+    submitForm(w);
+    await settle();
+    check("signed out, submitting raises no offer", !saveBar(w));
+  }
+
+  // ---- the drafting prompt gets the real question -----------------------
+  // questionFor checked only labels[0], the previous sibling and aria-label,
+  // and fell back to the literal string "Tell us about yourself" — so on a
+  // form using a legend the model was asked to write about nothing.
+  {
+    const { w, sent } = build(`
+      <fieldset>
+        <legend>Describe a system you designed end to end</legend>
+        <textarea id="t"></textarea>
+      </fieldset>`);
+    await settle();
+    Array.from(w.document.querySelectorAll("button"))
+      .find(b => b.textContent.includes("Generate AI Answer")).click();
+    await settle();
+
+    const call = sent.find(m => m.type === "GENERATE_ANSWER");
+    check("a question in a <legend> reaches the model",
+      call && call.payload.question.includes("system you designed"),
+      `question was ${JSON.stringify(call && call.payload.question)}`);
+  }
+
+  {
+    const { w, sent } = build(`
+      <div id="q">What is your proudest project?</div>
+      <textarea aria-labelledby="q" id="t"></textarea>`);
+    await settle();
+    Array.from(w.document.querySelectorAll("button"))
+      .find(b => b.textContent.includes("Generate AI Answer")).click();
+    await settle();
+
+    const call = sent.find(m => m.type === "GENERATE_ANSWER");
+    check("an aria-labelledby question reaches the model",
+      call && call.payload.question.includes("proudest project"),
+      `question was ${JSON.stringify(call && call.payload.question)}`);
+  }
+
+  // ---- the drafting call carries the page's job context -----------------
+  {
+    const { w, sent } = build(`
+      <h1>AI Engineer</h1>
+      <form>
+        <label for="t">Describe a time you led a project</label>
+        <textarea id="t"></textarea>
+      </form>`);
+    await settle();
+    Array.from(w.document.querySelectorAll("button"))
+      .find(b => b.textContent.includes("Generate AI Answer")).click();
+    await settle();
+
+    const call = sent.find(m => m.type === "GENERATE_ANSWER");
+    check("the drafting call names the company and role",
+      call && call.payload.company === "Nexus Labs" && call.payload.role === "AI Engineer",
+      `payload=${JSON.stringify(call && call.payload)}`);
   }
 
   const failed = results.filter(r => !r.ok);

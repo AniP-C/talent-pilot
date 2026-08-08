@@ -588,14 +588,36 @@ def analyze_job(job: JobData, user: auth.User = Depends(current_user)) -> dict:
 
 @app.post("/generate-answer")
 def generate_answer(req: AnswerRequest, user: auth.User = Depends(current_user)) -> dict:
-    resume = utils.load_profile(user.id, _validated_profile(user.id, req.profile))
+    # An application form is usually a different page from the posting, and an
+    # embedded one is an iframe containing the questions and nothing else. The
+    # description captured when the job was saved is the better context, so the
+    # tracked row is consulted before falling back to what the page could see.
+    tracked = None
+    if req.company and req.role:
+        db_path = workspace.jobs_db_path(user.id)
+        # Migrate before reading. get_job_by_identity degrades to None on an
+        # unmigrated database rather than raising, which would silently cost
+        # the saved description until the user next opened the dashboard.
+        db.create_table(db_path)
+        tracked = db.get_job_by_identity(req.company, req.role, db_path=db_path)
+
+    jd_text = req.jd_text
+    saved_jd = (tracked or {}).get("jd") or ""
+    if len(saved_jd) > len(jd_text):
+        jd_text = saved_jd
+
+    # Answer as the resume actually sent to this employer. Falling back to the
+    # tracked row's resume_used matters for anyone keeping one profile per
+    # target role, which is the whole point of supporting several.
+    profile = req.profile or (tracked or {}).get("resume_used")
+    resume = utils.load_profile(user.id, _validated_profile(user.id, profile))
 
     result = generate_smart_answer(
         user_id=user.id,
         question=req.question,
-        company=req.company,
-        role=req.role,
-        jd_text=req.jd_text,
+        company=req.company or (tracked or {}).get("company", ""),
+        role=req.role or (tracked or {}).get("role", ""),
+        jd_text=jd_text,
         active_resume_str=json.dumps(resume),
     )
 

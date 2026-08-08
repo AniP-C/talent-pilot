@@ -383,6 +383,8 @@ def render_dashboard(user: auth.User, db_path) -> None:
     ui.render_metrics(db.get_stats(db_path=db_path))
     st.write("")
 
+    render_followups(db_path)
+
     frame = pd.DataFrame(jobs)
 
     # --- Filters --------------------------------------------------------
@@ -434,6 +436,70 @@ def render_dashboard(user: auth.User, db_path) -> None:
     render_job_editor(jobs, db_path)
 
 
+def render_followups(db_path) -> None:
+    """Applications that have gone quiet and are worth a nudge.
+
+    The tracker could always say where an application stood; what it could not
+    say was which ones were drifting. Status alone does not distinguish "applied
+    on Tuesday" from "applied in March and never heard back", and the second is
+    the one that needs a decision.
+    """
+    # Seeded before the widget rather than passed as `value=`, so Streamlit
+    # takes the threshold from session state on every rerun instead of warning
+    # about a widget that has both a default and a stored value.
+    st.session_state.setdefault("followup_days", 10)
+    threshold = st.session_state["followup_days"]
+
+    followups = db.get_followups(db_path=db_path, quiet_after_days=threshold)
+
+    header = f"🔔 Needs a nudge ({len(followups)})" if followups else "🔔 Needs a nudge"
+
+    with st.expander(header, expanded=bool(followups)):
+        st.number_input(
+            "Consider an application quiet after this many days",
+            min_value=1,
+            max_value=180,
+            step=1,
+            key="followup_days",
+        )
+
+        if not followups:
+            st.caption(
+                f"Nothing has been silent for {threshold}+ days. "
+                "Terminal statuses — offers and rejections — are never counted."
+            )
+            return
+
+        st.caption(
+            "Measured from the last real signal: an email from the employer, a "
+            "stage change, or the date you applied. Longest silence first."
+        )
+
+        for job in followups:
+            quiet = job["days_quiet"]
+            line, action = st.columns([4, 1])
+
+            with line:
+                st.markdown(f"**{job['company']} — {job['role']}**")
+
+                if quiet is None:
+                    detail = "no dated activity on record"
+                else:
+                    detail = f"quiet for {quiet} days (last activity {job['last_activity']})"
+
+                st.caption(f"{ui.status_label(job['status'])} · {detail}")
+
+                if job.get("contact_email"):
+                    name = job.get("contact_name") or job["contact_email"]
+                    st.caption(
+                        f"↩️ Reply to [{name}](mailto:{job['contact_email']})"
+                    )
+
+            with action:
+                if job.get("link"):
+                    st.link_button("Posting ↗", job["link"], use_container_width=True)
+
+
 def render_job_editor(jobs: list[dict], db_path) -> None:
     """Status updates and deletion for a single application."""
     st.subheader("Update an application")
@@ -463,6 +529,15 @@ def render_job_editor(jobs: list[dict], db_path) -> None:
             db.update_status(job_id, new_status, db_path=db_path)
             st.success("Status updated.")
             st.rerun()
+
+    # Who has actually been in touch. Captured by inbox sync from the sender of
+    # every email it classifies, which the tracker previously discarded — so
+    # "who do I reply to?" had no answer without going back to Gmail.
+    if current.get("contact_email"):
+        name = current.get("contact_name") or current["contact_email"]
+        last_seen = (current.get("last_contact_at") or "")[:10]
+        suffix = f" · last heard {last_seen}" if last_seen else ""
+        st.caption(f"↩️ Contact: [{name}](mailto:{current['contact_email']}){suffix}")
 
     render_timeline(job_id, db_path)
 

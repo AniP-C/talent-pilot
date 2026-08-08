@@ -216,6 +216,9 @@ CREATE TABLE jobs (
     notes        TEXT,
     source       TEXT NOT NULL DEFAULT 'Manual',
     resume_used  TEXT,
+    contact_name    TEXT,      -- v3: who to reply to
+    contact_email   TEXT,
+    last_contact_at TEXT,      -- v3: when the employer last made contact
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
@@ -240,8 +243,21 @@ Key properties:
   back on exception, and always closes — which on Windows is the difference
   between a clean exit and a locked file.
 - **Migrations are version-stamped** via `PRAGMA user_version`, and opening a
-  database written by a newer schema raises rather than corrupting it.
+  database written by a newer schema raises rather than corrupting it. The v3
+  step checks `PRAGMA table_info` before each `ALTER TABLE`, so a fresh
+  database — where `_SCHEMA` already created the columns but `user_version` is
+  still 0 — passes through without either failing or swallowing a real error.
 - **`processed_emails`** makes repeat inbox syncs no-ops.
+- **`get_followups()`** returns live applications ordered by silence, measured
+  as `MAX(last_contact_at, latest status_history entry, date_applied)`. Rows
+  with no usable timestamp are surfaced rather than hidden — a job nothing is
+  known about is exactly the kind that gets forgotten. Terminal statuses are
+  excluded.
+- **`is_replyable()`** keeps send-only mailboxes (`no-reply@`, `notifications@`)
+  out of `contact_email`, and the contact columns are written with `COALESCE`
+  so a later automated message cannot displace a human already on the record.
+  `last_contact_at` moves either way: an automated acknowledgement is still the
+  employer making contact, and that is what silence is measured against.
 
 ### `auth.py`
 
@@ -403,8 +419,30 @@ DOM every few seconds on every open tab.
 
 Host permissions are limited to the supported boards plus
 `http://localhost:8000/*`. Any other site is opt-in per origin through
-**Enable Copilot on this site**, which requests `optional_host_permissions` and
-injects the scripts on demand.
+**Enable Copilot on this site**, which requests `optional_host_permissions`.
+
+Granting an origin is recorded as a *dynamic content-script registration*
+(`chrome.scripting.registerContentScripts`, id `talent-pilot-granted-sites`),
+rebuilt from `chrome.permissions.getAll()` on install, on startup, and on every
+permissions change. The earlier version followed the grant with a one-off
+`executeScript`, which lasts exactly as long as that page — so the next
+navigation had no script and the popup asked to enable the same, already
+permitted, site again. Every page. The API's own origins are filtered out of
+the registration, or the scanner would decorate the dashboard's own textareas.
+
+Injection is `all_frames`. Greenhouse, Lever and Workday application forms are
+routinely embedded in an iframe on the employer's careers page, so a top-frame
+injection missed exactly the pages with the most questions to answer. Only the
+top frame answers the popup's `extract_job` request — otherwise whichever frame
+replied first would win, and an ad frame could out-race the real posting.
+`content.js` sets a flag in its isolated world and stands down if it is already
+loaded, so the static and dynamic registrations can overlap harmlessly.
+
+The content script re-reads the answer bank when background.js broadcasts
+`AUTOFILL_CHANGED` — on sign-in, sign-out, and after an answer is saved — and
+retries a failed first load on a backoff. It previously fetched once and never
+again, so a page opened before signing in stayed empty for the life of the tab,
+which is indistinguishable from the feature being broken.
 
 ## Runtime Flows
 

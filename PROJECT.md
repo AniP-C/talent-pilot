@@ -52,8 +52,14 @@ like you rather than like a language model.
 into application states and the matching record updates itself. A cheap rule
 filter runs first so newsletters never reach a paid AI call.
 
+**Catches the ones you forget.** Saving used to be a click in the popup, so an
+application filled in without remembering to click it was never tracked at all.
+The extension now notices a submission and offers to record it — on the
+confirmation page, if the form navigated there. It offers; it never decides.
+
 **Tracks everything.** A dashboard with search, status filters, and summary
-metrics.
+metrics — plus the two questions the tracker could not previously answer about
+its own data: which applications have gone quiet, and who to reply to.
 
 ---
 
@@ -125,6 +131,29 @@ the extension's own origin, which is the only origin the API's CORS policy
 accepts. A job posting is untrusted input, so every scraped value is rendered
 with `textContent` rather than `innerHTML`.
 
+### Silence is measured from the last signal, not the date applied
+
+"Which applications are drifting?" is the question that changes what you do
+next, and status alone cannot answer it — "applied on Tuesday" and "applied in
+March, never heard back" are the same row. The obvious implementation, age
+since `date_applied`, reports every long-running process as neglected, and a
+list that is mostly wrong stops being read. Staleness is therefore measured
+from the most recent real signal: the last email the employer sent, the last
+stage change, or failing both the date applied.
+
+Terminal statuses are excluded. An offer or a rejection is not waiting on
+anybody.
+
+### The extension offers; it does not decide
+
+Two features could plausibly act on their own — filling a form and recording a
+submission — and neither does. A saved answer moves into a field on a click,
+never on sight; a submitted application produces an offer to track it, never a
+row. Silently populating a form somebody is about to submit under their own
+name, or recording an application they did not tell us about, are both the kind
+of helpfulness that is indistinguishable from a bug when it gets something
+wrong.
+
 ### Cheap filters before expensive calls
 
 Inbox sync runs a keyword rule engine before any AI call, and records which
@@ -170,6 +199,28 @@ left both services running the old version, so a new endpoint returned 404 with
 nothing in the logs to explain it. `systemctl enable --now` starts a unit but
 does nothing when it is already running.
 
+**A permission is not a script.** Enabling the copilot on a site asked for the
+origin, got it, and injected the content script with `executeScript` — which
+lives exactly as long as that one page. The permission was granted permanently
+and correctly; nothing was ever *registered*, so the next navigation had no
+script and the popup asked to enable the same, already-permitted site again. On
+every page, forever. The fix is a dynamic content-script registration rebuilt
+from the granted origins, which is the durable form of the same intent.
+
+**A content script is not the whole page.** Suggestions never appeared on the
+forms with the most questions on them, because Greenhouse, Lever and Workday
+routinely embed the application in an iframe on the employer's careers page and
+injection was top-frame only. Making it `all_frames` then created a second
+problem: every frame answered the popup's "what job is this?" request, and an ad
+frame could reply first. Only the top frame answers now.
+
+**Fetching once is a decision about time.** The extension read the answer bank
+when the content script loaded and never again — so opening a job page and
+*then* signing in left that tab permanently empty, which from the outside is
+identical to the feature being broken. Anything cached for the life of a page
+needs an answer to "what if it changes?", and "reload the tab" is not one the
+user knows to try.
+
 **An untested backup is not a backup.** The backup script is only trustworthy
 because a restore was actually performed and the databases checked afterwards.
 
@@ -179,7 +230,7 @@ because a restore was actually performed and the databases checked afterwards.
 
 | | |
 | --- | --- |
-| Tests | 159, no network calls |
+| Tests | 397, no network calls — including two jsdom suites driving the real extension code |
 | API endpoints | 20 |
 | Hosting | GCE `e2-micro`, us-west1, free tier |
 | TLS | Let's Encrypt via Caddy, auto-renewing |
@@ -187,7 +238,8 @@ because a restore was actually performed and the databases checked afterwards.
 
 Tests cover password hashing and token lifecycle, storage rules, path
 traversal across several attack shapes, upload validation, the email filter,
-and the API's authentication and isolation guarantees. The Gemini and Gmail
+follow-up detection and contact capture, the v2→v3 migration on a database
+built the old way, and the API's authentication and isolation guarantees. The Gemini and Gmail
 wrappers are deliberately untested — they are thin shims over external
 services, and the logic worth testing sits in pure functions around them.
 
@@ -229,5 +281,10 @@ around 250 ms of round-trip on every page load.
 
 - Password reset by email
 - A real job-board adapter layer, so a broken selector is a config change
-- Analytics over time: response rates by source, time-to-first-response
+- Analytics over time: response rates by source, time-to-first-response —
+  `status_history` already records what this needs
+- Near-duplicate detection: "Sr. AI Engineer" and "Senior AI Engineer" at one
+  company are still two rows, because the uniqueness index is exact
+- Capture `datePosted`, `validThrough`, `baseSalary` and `jobLocation` from the
+  JSON-LD block already being parsed for company and role, and thrown away
 - Postgres, if it ever needs to serve more than a few people

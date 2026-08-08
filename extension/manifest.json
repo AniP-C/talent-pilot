@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Talent Pilot — AI Job Copilot",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Save job postings, score them against your resume, and reuse your saved application answers.",
   "permissions": ["activeTab", "storage", "scripting"],
   "host_permissions": [
@@ -33,14 +33,31 @@
       "matches": [
         "https://*.linkedin.com/*",
         "https://*.greenhouse.io/*",
-        "https://jobs.lever.co/*",
+        "https://*.lever.co/*",
         "https://*.wellfound.com/*",
         "https://*.angel.co/*",
         "https://*.ashbyhq.com/*",
-        "https://*.workable.com/*"
+        "https://*.workable.com/*",
+        "https://*.myworkdayjobs.com/*",
+        "https://*.smartrecruiters.com/*",
+        "https://*.icims.com/*",
+        "https://*.jobvite.com/*",
+        "https://*.bamboohr.com/*",
+        "https://*.breezy.hr/*",
+        "https://*.recruitee.com/*",
+        "https://*.teamtailor.com/*",
+        "https://*.applytojob.com/*",
+        "https://*.zohorecruit.com/*",
+        "https://*.taleo.net/*",
+        "https://*.successfactors.com/*",
+        "https://*.workatastartup.com/*",
+        "https://*.pinpointhq.com/*",
+        "https://*.naukri.com/*",
+        "https://*.indeed.com/*"
       ],
       "js": ["content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ]
 }

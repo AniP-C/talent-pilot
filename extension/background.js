@@ -45,6 +45,8 @@ async function setSession(token, email) {
     // an expired session would serve the previous account's saved answers
     // until the cache happened to age out.
     autofillCache = { rules: false, data: null, at: 0 };
+    // Job pages opened before signing in are holding an empty rule set.
+    await broadcastAutofillChanged();
 }
 
 async function clearSession() {
@@ -52,6 +54,102 @@ async function clearSession() {
     // One account's saved answers must never be served to the next person to
     // sign in on this browser.
     autofillCache = { rules: false, data: null, at: 0 };
+    // Signing out has to take the suggestions off open pages too, or the
+    // previous account's answers stay one click from being filled in.
+    await broadcastAutofillChanged();
+}
+
+// ---------------------------------------------------------------------------
+// Keeping the copilot enabled on sites the user has granted
+// ---------------------------------------------------------------------------
+// Granting a host permission does not run a content script; it only makes one
+// injectable. The popup used to follow the grant with chrome.scripting
+// .executeScript, which lasts exactly as long as that one page — so the next
+// navigation had no script, the popup reported "Copilot is not active on this
+// page", and the user was asked to enable the same site again. Every page.
+// Forever.
+//
+// A dynamic registration is the durable form of the same thing: Chrome injects
+// it into every matching page from now on, and remembers across restarts.
+const DYNAMIC_SCRIPT_ID = "talent-pilot-granted-sites";
+
+// Origins used for API traffic rather than job hunting. The dashboard is
+// served from one of them, and injecting the form scanner into our own UI
+// would decorate its textareas with "Generate AI Answer" buttons.
+async function nonJobOrigins() {
+    const origins = new Set(["https://katchjobs.online/*", "http://localhost:8000/*"]);
+
+    try {
+        origins.add(`${new URL(await getApiUrl()).origin}/*`);
+    } catch {
+        // A malformed stored address is handled where it is set; here it just
+        // means one fewer origin to exclude.
+    }
+
+    return origins;
+}
+
+async function syncContentScripts() {
+    const { origins = [] } = await chrome.permissions.getAll();
+    const skip = await nonJobOrigins();
+    const matches = origins.filter((origin) => !skip.has(origin));
+
+    // Re-registering an existing id throws, so clear first. Unregistering
+    // something that was never registered throws too, and harmlessly.
+    try {
+        await chrome.scripting.unregisterContentScripts({ ids: [DYNAMIC_SCRIPT_ID] });
+    } catch {
+        // Nothing was registered yet.
+    }
+
+    if (!matches.length) return;
+
+    try {
+        await chrome.scripting.registerContentScripts([
+            {
+                id: DYNAMIC_SCRIPT_ID,
+                matches,
+                js: ["content.js"],
+                runAt: "document_idle",
+                // Application forms on Greenhouse, Lever and Workday are
+                // routinely embedded in an iframe on the employer's own careers
+                // page. Injecting only the top frame is why suggestions never
+                // appeared on exactly the pages with the most questions to
+                // answer. content.js is idempotent per frame, so the overlap
+                // with the static registration above costs nothing.
+                allFrames: true,
+                persistAcrossSessions: true
+            }
+        ]);
+    } catch (err) {
+        console.error("[Job Copilot] could not register content scripts:", err);
+    }
+}
+
+chrome.runtime.onInstalled.addListener(syncContentScripts);
+chrome.runtime.onStartup.addListener(syncContentScripts);
+chrome.permissions.onAdded.addListener(syncContentScripts);
+chrome.permissions.onRemoved.addListener(syncContentScripts);
+
+// ---------------------------------------------------------------------------
+// Telling open pages their answers changed
+// ---------------------------------------------------------------------------
+// A content script reads the answer bank once, when it loads. Without this,
+// signing in — or saving an answer — after a job page was already open leaves
+// that page with an empty rule set and no suggestions until it is reloaded,
+// which looks exactly like the feature being broken.
+async function broadcastAutofillChanged() {
+    const tabs = await chrome.tabs.query({});
+
+    await Promise.all(
+        tabs.map((tab) =>
+            chrome.tabs
+                .sendMessage(tab.id, { type: "AUTOFILL_CHANGED" })
+                .catch(() => {
+                    // No content script in that tab, which is the normal case.
+                })
+        )
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -338,14 +436,48 @@ const handlers = {
     },
 
     // Saves an AI-drafted answer so the same question is instant next time.
-    SAVE_CUSTOM_ANSWER({ question, answer }) {
+    async SAVE_CUSTOM_ANSWER({ question, answer }) {
         // Any write invalidates the cache, or the new answer would not be
         // suggested until the TTL happened to expire.
         autofillCache = { rules: false, data: null, at: 0 };
-        return apiRequest("/autofill/custom", {
+
+        const result = await apiRequest("/autofill/custom", {
             method: "POST",
             body: { question, answer }
         });
+
+        // Other tabs are showing the same application form more often than
+        // not, so tell them a new answer exists rather than making the user
+        // reload to see it.
+        if (result.ok) await broadcastAutofillChanged();
+
+        return result;
+    },
+
+    // Called by the popup straight after a site is granted, so the durable
+    // registration exists without waiting for the permissions event.
+    async SYNC_SITE_SCRIPTS() {
+        await syncContentScripts();
+        return { ok: true, data: {} };
+    },
+
+    // An application form embedded in an iframe can see the questions but not
+    // the posting around them. Only the top frame can answer that, and only
+    // this worker knows the tab id needed to address it.
+    async GET_TOP_FRAME_JOB(message, sender) {
+        const tabId = sender?.tab?.id;
+        if (tabId === undefined) return { ok: false, error: "No originating tab." };
+
+        try {
+            const data = await chrome.tabs.sendMessage(
+                tabId,
+                { action: "extract_job" },
+                { frameId: 0 }
+            );
+            return { ok: true, data };
+        } catch (err) {
+            return { ok: false, error: String(err) };
+        }
     }
 };
 
@@ -357,7 +489,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return false;
     }
 
-    handler(message)
+    // `sender` is passed through so a handler can tell which tab and frame
+    // asked. Handlers that do not care simply ignore the second argument.
+    handler(message, sender)
         .then(sendResponse)
         .catch((err) => sendResponse({ ok: false, error: String(err) }));
 

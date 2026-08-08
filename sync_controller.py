@@ -2,6 +2,7 @@
 
 import time
 import uuid
+from email.utils import parseaddr
 from typing import Callable, Optional
 
 import db
@@ -145,6 +146,11 @@ def sync_inbox_to_db(
             summary["skipped"] += 1
             continue
 
+        # The From header is 'Jane Doe <jane@acme.com>' or a bare address.
+        # parseaddr handles both, plus the quoted display names that would
+        # otherwise need unpicking by hand.
+        contact_name, contact_email = parseaddr(email["sender"])
+
         try:
             outcome = db.update_job_from_email(
                 company_name=company,
@@ -152,6 +158,8 @@ def sync_inbox_to_db(
                 subject=email["subject"],
                 reasoning=result.get("reasoning", ""),
                 role=role,
+                contact_name=contact_name,
+                contact_email=contact_email,
                 db_path=db_path,
             )
             db.mark_email_processed(email["id"], db_path=db_path)

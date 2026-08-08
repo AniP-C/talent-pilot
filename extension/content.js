@@ -7,6 +7,14 @@
 (() => {
     "use strict";
 
+    // The same frame can be injected twice — once by the static registration
+    // in the manifest and once by the dynamic one covering granted sites, or
+    // by the popup topping up a tab that was already open. Content scripts
+    // from one extension share an isolated world per frame, so this flag is
+    // visible to every copy and the later ones simply stand down.
+    if (window.__talentPilotLoaded) return;
+    window.__talentPilotLoaded = true;
+
     // -----------------------------------------------------------------------
     // The signed-in user's saved answers
     //
@@ -17,16 +25,55 @@
     // -----------------------------------------------------------------------
     let autofillRules = [];
 
+    // Why there are no suggestions, so the popup can say so instead of leaving
+    // the user to guess. "unreachable" covers a sleeping service worker or a
+    // down API and is the only state worth retrying.
+    let ruleState = "loading"; // loading | ready | signed-out | unreachable
+
     async function loadAutofillRules() {
         try {
             const response = await chrome.runtime.sendMessage({ type: "GET_AUTOFILL" });
-            autofillRules = response?.ok ? response.data.rules || [] : [];
+
+            if (response?.ok) {
+                autofillRules = response.data.rules || [];
+                ruleState = "ready";
+            } else {
+                autofillRules = [];
+                ruleState = response?.needsAuth ? "signed-out" : "unreachable";
+            }
         } catch {
-            // Not signed in, or the service worker is asleep. Suggestions are
-            // an enhancement; the page must keep working without them.
+            // The service worker was asleep, or the extension was reloaded out
+            // from under this page. Suggestions are an enhancement; the page
+            // must keep working without them.
             autofillRules = [];
+            ruleState = "unreachable";
         }
+
+        return ruleState;
     }
+
+    // The first load races the service worker waking up, and a job page opened
+    // before signing in gets nothing at all. Both used to be permanent for the
+    // life of the tab: rules were fetched exactly once, so a page that came up
+    // empty stayed empty however long the user waited or however many times
+    // they filled the questionnaire.
+    const RETRY_DELAYS_MS = [1500, 5000, 15000];
+
+    async function loadWithRetries() {
+        for (const delay of RETRY_DELAYS_MS) {
+            if ((await loadAutofillRules()) !== "unreachable") return;
+            await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+        await loadAutofillRules();
+    }
+
+    // Coming back to the tab is the moment a sign-in or a newly saved answer
+    // in another tab is most likely to have happened.
+    document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState !== "visible") return;
+        if (ruleState === "ready" && autofillRules.length) return;
+        loadAutofillRules().then(scheduleScan);
+    });
 
     // Patterns arrive as strings so they can cross the message boundary.
     // Catalogue entries are curated regexes; a user's own question is matched
@@ -237,9 +284,31 @@
     // -----------------------------------------------------------------------
     // Active mode: an AI drafting button under each free-text answer box
     // -----------------------------------------------------------------------
+    // A textarea worth offering to draft: one inside a form, or one carrying a
+    // question of its own. Every textarea on the page was too broad — signed
+    // out it put a button the user could only get an error from under LinkedIn's
+    // message composer and under the comment box on any enabled site.
+    function isApplicationQuestion(textarea) {
+        if (textarea.closest("form")) return true;
+        return Boolean(
+            textarea.labels?.length ||
+            textarea.getAttribute("aria-label") ||
+            textarea.getAttribute("aria-labelledby") ||
+            // Long-form questions are routinely wrapped in a fieldset whose
+            // legend is the question, with no label element anywhere.
+            textarea.closest("fieldset")?.querySelector("legend")
+        );
+    }
+
     function injectAIGenerateButtons() {
+        // Drafting needs a signed-in session and a resume behind it. Offering
+        // the button without one produces a button whose only outcome is an
+        // error message.
+        if (ruleState !== "ready") return;
+
         document.querySelectorAll("textarea").forEach((textarea) => {
             if (textarea.dataset.aiButtonAdded) return;
+            if (!isApplicationQuestion(textarea)) return;
 
             const button = buildGenerateButton(textarea);
             textarea.insertAdjacentElement("afterend", button);
@@ -247,14 +316,71 @@
         });
     }
 
+    // The question a textarea is asking.
+    //
+    // This used to check only labels[0], the previous sibling and aria-label,
+    // and fall back to the literal string "Tell us about yourself" — so on any
+    // form that puts its question in a <legend>, an aria-labelledby, or a plain
+    // <div> above the box, the model was genuinely asked to write about
+    // nothing. Sources are tried strongest first and the first real one wins;
+    // unlike the matcher's version this returns one question rather than every
+    // scrap of text, because it is going into a prompt.
     function questionFor(textarea) {
-        const label =
-            textarea.labels?.[0] ||
-            textarea.previousElementSibling ||
-            textarea.parentElement?.querySelector("label");
+        const describedBy = (textarea.getAttribute("aria-labelledby") || "")
+            .split(/\s+/)
+            .filter(Boolean)
+            .map((id) => document.getElementById(id)?.innerText);
 
-        return (label?.innerText || textarea.getAttribute("aria-label") || "").trim() ||
-            "Tell us about yourself";
+        const candidates = [
+            textarea.labels?.[0]?.innerText,
+            textarea.getAttribute("aria-label"),
+            ...describedBy,
+            textarea.closest("fieldset")?.querySelector("legend")?.innerText,
+            textarea.previousElementSibling?.innerText,
+            textarea.parentElement?.querySelector("label")?.innerText,
+            textarea.getAttribute("placeholder"),
+            // Last resort: the container's own text, which on label-less forms
+            // is the question with the box's own (empty) value beside it.
+            textarea.parentElement?.innerText,
+        ];
+
+        const found = candidates
+            .map((part) => clean(part))
+            .find((part) => part.length > 2 && part.length <= 600);
+
+        return found || "";
+    }
+
+    // The posting and the form are frequently different pages, and an embedded
+    // form is an iframe that can see none of the posting around it. Asking the
+    // top frame is the difference between the model knowing which company and
+    // role it is writing for and guessing.
+    async function jobContext() {
+        const here = extractJobData();
+
+        if (window.top === window) return here;
+
+        try {
+            const response = await chrome.runtime.sendMessage({ type: "GET_TOP_FRAME_JOB" });
+            const outer = response?.ok ? response.data : null;
+
+            if (outer && (outer.company || outer.jd_text)) {
+                // Prefer whichever source actually has a description; the outer
+                // page usually does and the form iframe usually does not.
+                return {
+                    company: outer.company || here.company,
+                    role: outer.role || here.role,
+                    jd_text: outer.jd_text.length >= here.jd_text.length
+                        ? outer.jd_text
+                        : here.jd_text,
+                };
+            }
+        } catch {
+            // The top frame has no content script, which is normal on a site
+            // enabled only for this origin. Fall through to what we can see.
+        }
+
+        return here;
     }
 
     function buildGenerateButton(textarea) {
@@ -286,6 +412,14 @@
 
     async function handleGenerate(textarea, button) {
         const question = questionFor(textarea);
+
+        // Better to say the question could not be read than to send the model
+        // a placeholder and return a paragraph about nothing in particular.
+        if (!question) {
+            finish(button, "❌ Could not read the question for this box", "#d9534f");
+            return;
+        }
+
         const cacheKey = `ans_${location.href}_${question.slice(0, 50)}`;
 
         button.disabled = true;
@@ -309,14 +443,21 @@
 
         button.textContent = "🤖 Generating…";
 
-        const job = extractJobData();
+        const job = await jobContext();
+
+        // Which resume to answer as. The popup records the chosen profile and
+        // the content script never read it, so someone keeping one resume per
+        // target role was drafted from whichever the server picked by default.
+        const { activeProfile } = await chrome.storage.local.get("activeProfile");
+
         const response = await chrome.runtime.sendMessage({
             type: "GENERATE_ANSWER",
             payload: {
                 question,
                 company: job.company,
                 role: job.role,
-                jd_text: job.jd_text
+                jd_text: job.jd_text,
+                profile: activeProfile || null
             }
         });
 
@@ -632,14 +773,236 @@
     }
 
     // -----------------------------------------------------------------------
+    // Catching an application as it is submitted
+    //
+    // Saving was a manual click in the popup, so anything submitted without
+    // remembering to click it never reached the tracker at all — the largest
+    // gap between "applied" and "tracked", and the one the user cannot see.
+    //
+    // The intent is stashed rather than acted on. Submitting usually navigates,
+    // which would destroy a bar rendered on the spot, so the offer is written
+    // to storage and picked up by whichever page loads next. Forms that submit
+    // over XHR stay put and see the bar immediately.
+    //
+    // Nothing is ever saved without a click. The extension does not get to
+    // decide the user applied to something.
+    // -----------------------------------------------------------------------
+    const PENDING_SAVE_KEY = "pendingSave";
+    const PENDING_SAVE_TTL_MS = 10 * 60 * 1000;
+
+    // A form worth offering to track. A single-input form is a search box; an
+    // application has a resume upload, a free-text question, or simply a lot
+    // of fields.
+    function looksLikeApplication(form) {
+        if (!form) return false;
+        if (form.querySelector('input[type="file"], textarea')) return true;
+        return form.querySelectorAll(FIELD_SELECTOR).length >= 4;
+    }
+
+    document.addEventListener(
+        "submit",
+        (event) => {
+            if (ruleState !== "ready") return;
+            if (!looksLikeApplication(event.target)) return;
+
+            // Deliberately not awaited: this handler runs during submit and the
+            // page may be seconds from unloading.
+            jobContext()
+                .then(async (job) => {
+                    // Neither a company nor a role means this is not a job
+                    // posting. Returning here rather than falling through also
+                    // stops an unrelated form raising an offer left over from
+                    // an earlier submission on another tab.
+                    if (!job.company && !job.role) return;
+
+                    await chrome.storage.local.set({
+                        [PENDING_SAVE_KEY]: {
+                            company: job.company,
+                            role: job.role,
+                            jd_text: job.jd_text,
+                            link: location.href,
+                            at: Date.now()
+                        }
+                    });
+
+                    // Forms that post over XHR stay on the page and see this
+                    // straight away; ones that navigate pick it up on arrival.
+                    await offerPendingSave();
+                })
+                .catch(() => {
+                    // A failed offer must never interfere with the submission
+                    // the user actually came here to make.
+                });
+        },
+        true // capture: forms that preventDefault still reach this first
+    );
+
+    async function offerPendingSave() {
+        if (ruleState !== "ready") return;
+        if (document.querySelector(".ai-copilot-save-bar")) return;
+
+        const stored = await chrome.storage.local.get(PENDING_SAVE_KEY);
+        const pending = stored[PENDING_SAVE_KEY];
+
+        if (!pending) return;
+
+        // An offer from a browsing session hours ago is noise, not a prompt.
+        if (Date.now() - (pending.at || 0) > PENDING_SAVE_TTL_MS) {
+            await chrome.storage.local.remove(PENDING_SAVE_KEY);
+            return;
+        }
+
+        // Already tracked — saying so beats offering to save it twice, and the
+        // database would reject the duplicate anyway.
+        const check = await chrome.runtime.sendMessage({
+            type: "CHECK_JOB",
+            company: pending.company,
+            role: pending.role
+        });
+
+        if (check?.ok && check.data.exists) {
+            await chrome.storage.local.remove(PENDING_SAVE_KEY);
+            return;
+        }
+
+        document.body.appendChild(buildSaveBar(pending));
+    }
+
+    function buildSaveBar(pending) {
+        const bar = document.createElement("div");
+        bar.className = "ai-copilot-save-bar";
+
+        const label = document.createElement("span");
+        // Page-derived values only, and set as text: a job posting is
+        // untrusted input and this element lives in the page's own DOM.
+        label.textContent = `Track your application to ${
+            pending.company || "this company"
+        }${pending.role ? ` — ${pending.role}` : ""}?`;
+
+        const save = document.createElement("button");
+        save.type = "button";
+        save.textContent = "Save to tracker";
+        styleBarButton(save, "#1e7e34");
+
+        const dismiss = document.createElement("button");
+        dismiss.type = "button";
+        dismiss.textContent = "Not now";
+        styleBarButton(dismiss, "transparent");
+        dismiss.style.color = "#d6d9de";
+
+        save.addEventListener("click", async () => {
+            save.disabled = true;
+            save.textContent = "Saving…";
+
+            const response = await chrome.runtime.sendMessage({
+                type: "SAVE_JOB",
+                job: {
+                    company: pending.company,
+                    role: pending.role || "Unknown Role",
+                    jd_text: pending.jd_text,
+                    link: pending.link,
+                    profile: (await chrome.storage.local.get("activeProfile")).activeProfile || null
+                }
+            });
+
+            await chrome.storage.local.remove(PENDING_SAVE_KEY);
+
+            if (!response?.ok) {
+                save.textContent = "Could not save";
+                label.textContent = response?.error || "Saving failed.";
+                return;
+            }
+
+            label.textContent = "✅ Saved to your tracker.";
+            save.remove();
+            setTimeout(() => bar.remove(), 2500);
+        });
+
+        dismiss.addEventListener("click", async () => {
+            await chrome.storage.local.remove(PENDING_SAVE_KEY);
+            bar.remove();
+        });
+
+        bar.append(label, save, dismiss);
+
+        Object.assign(bar.style, {
+            all: "initial",
+            position: "fixed",
+            bottom: "16px",
+            right: "16px",
+            zIndex: "2147483647",
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+            maxWidth: "min(420px, calc(100vw - 32px))",
+            padding: "10px 14px",
+            backgroundColor: "#1f2328",
+            color: "#fff",
+            borderRadius: "8px",
+            fontFamily: "Arial, sans-serif",
+            fontSize: "13px",
+            lineHeight: "1.4",
+            boxShadow: "0 4px 16px rgba(0,0,0,0.3)"
+        });
+
+        return bar;
+    }
+
+    function styleBarButton(button, background) {
+        Object.assign(button.style, {
+            all: "initial",
+            flexShrink: "0",
+            padding: "5px 10px",
+            backgroundColor: background,
+            color: "#fff",
+            borderRadius: "5px",
+            fontFamily: "Arial, sans-serif",
+            fontSize: "12px",
+            fontWeight: "bold",
+            cursor: "pointer"
+        });
+    }
+
+    // -----------------------------------------------------------------------
     // Wiring
     // -----------------------------------------------------------------------
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-        if (request.action === "extract_job") {
+        // Answers changed elsewhere — a sign-in, a sign-out, or an answer saved
+        // from another tab. Re-reading here is what stops the user having to
+        // reload every open application form.
+        if (request.type === "AUTOFILL_CHANGED") {
+            loadAutofillRules().then(() => {
+                // A sign-out has to remove what is already on the page; leaving
+                // the boxes up would keep the previous account's answers one
+                // click from being filled in.
+                if (!autofillRules.length) removeSuggestions();
+                scheduleScan();
+            });
+            return false;
+        }
+
+        // Only the top frame answers this. With all_frames injection every
+        // iframe on the page runs this script too, and whichever replied first
+        // would win — so an ad frame could out-race the real posting.
+        if (request.action === "extract_job" && window.top === window) {
             sendResponse(extractJobData());
         }
+
+        // What the popup needs to explain an empty page: whether the script is
+        // here at all, and if so why it is not suggesting anything.
+        if (request.action === "copilot_state" && window.top === window) {
+            sendResponse({ ruleState, ruleCount: autofillRules.length });
+        }
+
         return false;
     });
+
+    function removeSuggestions() {
+        document.querySelectorAll(".ai-copilot-suggestion").forEach((box) => box.remove());
+        document
+            .querySelectorAll("[data-ai-suggested]")
+            .forEach((field) => delete field.dataset.aiSuggested);
+    }
 
     // A MutationObserver reacts to job boards rendering asynchronously without
     // the constant re-scanning the old 3-second interval did on every tab.
@@ -661,5 +1024,18 @@
 
     // Answers have to arrive before the first scan, or a form rendered
     // immediately gets no suggestions until something else mutates the page.
-    loadAutofillRules().then(scheduleScan);
+    loadAutofillRules().then(() => {
+        scheduleScan();
+
+        // A submission usually navigates to a confirmation page, so the offer
+        // to track it is picked up here rather than where it was made. Top
+        // frame only: an embedded form and its parent would otherwise both
+        // raise a bar for the same application.
+        if (window.top === window) offerPendingSave();
+
+        // Keep trying in the background when the first attempt could not reach
+        // the service worker, rescanning after each attempt that changes
+        // anything. The old code gave up here and the tab stayed dead.
+        if (ruleState === "unreachable") loadWithRetries().then(scheduleScan);
+    });
 })();

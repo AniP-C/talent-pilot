@@ -332,6 +332,18 @@ async function activeTab() {
     return tab;
 }
 
+// Origin match pattern for a tab, or "" for pages that cannot host a content
+// script at all (chrome://, the Web Store, a file:// URL).
+function originPatternFor(url) {
+    try {
+        const parsed = new URL(url);
+        if (!["http:", "https:"].includes(parsed.protocol)) return "";
+        return `${parsed.origin}/*`;
+    } catch {
+        return "";
+    }
+}
+
 async function scanActivePage() {
     const tab = await activeTab();
     // Cached so the "enable on this site" click handler can read it without
@@ -342,11 +354,13 @@ async function scanActivePage() {
     try {
         job = await chrome.tabs.sendMessage(tab.id, { action: "extract_job" });
     } catch (err) {
-        // No content script on this page — offer to inject one on demand
-        // rather than requesting access to every site up front.
-        el("job-info").textContent = "Copilot is not active on this page.";
-        show("btn-enable-site", tab.url?.startsWith("https://"));
-        return;
+        // No content script in this tab. That does not mean the site is not
+        // enabled: a tab open from before the permission was granted has no
+        // script in it, and asking the user to "enable" a site they already
+        // enabled — on every page, forever — was the old behaviour.
+        job = await injectAndRetry(tab);
+
+        if (!job) return;
     }
 
     // A page with neither a company nor a role is not a job posting.
@@ -385,10 +399,49 @@ async function scanActivePage() {
     show("btn-save", true);
 }
 
+// Puts the content script into a tab that is missing one, and asks the page
+// again. Returns the job data, or null when the site is not enabled yet.
+async function injectAndRetry(tab) {
+    const origin = originPatternFor(tab.url);
+
+    if (!origin) {
+        el("job-info").textContent = "Copilot cannot run on this page.";
+        show("btn-enable-site", false);
+        return null;
+    }
+
+    // Already granted? Then this is just a stale tab. Top it up silently
+    // rather than making the user re-authorise a site they already trusted.
+    if (!(await chrome.permissions.contains({ origins: [origin] }))) {
+        el("job-info").textContent = "Copilot is not enabled on this site yet.";
+        show("btn-enable-site", true);
+        return null;
+    }
+
+    return injectInto(tab.id);
+}
+
+// Injects and re-asks. Shared by the stale-tab path and the enable button.
+async function injectInto(tabId) {
+    try {
+        await chrome.scripting.executeScript({
+            target: { tabId, allFrames: true },
+            files: ["content.js"]
+        });
+        return await chrome.tabs.sendMessage(tabId, { action: "extract_job" });
+    } catch (err) {
+        el("job-info").textContent = "Copilot could not run on this page.";
+        show("btn-enable-site", false);
+        return null;
+    }
+}
+
 el("btn-enable-site").addEventListener("click", () => {
     if (!currentTab?.url) return;
 
-    const origin = `${new URL(currentTab.url).origin}/*`;
+    const origin = originPatternFor(currentTab.url);
+    if (!origin) return;
+
     const tabId = currentTab.id;
 
     // Requested synchronously so the click's user gesture is still live.
@@ -398,10 +451,10 @@ el("btn-enable-site").addEventListener("click", () => {
             return;
         }
 
-        await chrome.scripting.executeScript({
-            target: { tabId },
-            files: ["content.js"]
-        });
+        // Register the site durably before touching this tab. Without it the
+        // grant only ever produced a one-page injection, and the next
+        // navigation asked to enable the same site all over again.
+        await send({ type: "SYNC_SITE_SCRIPTS" });
 
         show("btn-enable-site", false);
         await scanActivePage();

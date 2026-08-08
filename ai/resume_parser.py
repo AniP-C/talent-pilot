@@ -143,13 +143,27 @@ def generate_smart_answer(
     """Draft an application answer grounded in the user's resume and past answers."""
     memory_context, memory_file = load_answer_memory(user_id, question)
 
+    # 1500 characters of a job description is the "About us" preamble and
+    # almost never the requirements, which is what makes an answer specific.
+    # The resume was already getting 6000; this is no longer the tight budget
+    # it was when the model behind it had a far smaller context window.
+    job_description = jd_text[:6000].strip()
+
+    # Said explicitly rather than left blank. An empty section invites the
+    # model to fill the gap by inventing what the role probably involves.
+    if not job_description:
+        job_description = (
+            "Not available. Do not guess at what this role involves; "
+            "answer from the resume and the question alone."
+        )
+
     prompt = f"""
     You are an expert career coach helping a candidate write a response for a
     job application. Write a concise, professional, highly relevant answer.
 
     Target Question: {question}
-    Target Company: {company}
-    Target Role: {role}
+    Target Company: {company or "Not named on the page."}
+    Target Role: {role or "Not named on the page."}
 
     CANDIDATE'S RESUME DATA:
     {active_resume_str[:6000]}
@@ -157,14 +171,17 @@ def generate_smart_answer(
     CANDIDATE'S PREVIOUS ANSWERS (match their authentic facts if available):
     {memory_context[:3000] if memory_context else "No prior context. Draft strictly from the resume."}
 
-    JOB DESCRIPTION FRAGMENT:
-    {jd_text[:1500]}
+    JOB DESCRIPTION:
+    {job_description}
 
     RULES:
     1. Keep it under 200 words.
     2. Sound like an authentic engineer; no generic filler or empty metaphors.
     3. Never invent employers, dates, or metrics that are not in the resume.
     4. Respect any factual metrics provided in previous answers.
+    5. Answer the Target Question specifically. Where the job description names
+       a requirement the resume can speak to, connect the two explicitly rather
+       than describing the candidate in general terms.
     """
     result = generate_structured(prompt, AnswerResponse, "SMART_ANSWER")
 

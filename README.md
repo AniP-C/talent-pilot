@@ -134,6 +134,13 @@ This flow shows how Talent Pilot connects browser context, resume profiles, AI a
 - Store company, role, job description, status, source, resume used, and notes
 - Filter applications by company, role, and status
 - Export selected applications as CSV
+- **Needs a nudge** — live applications that have gone quiet, longest silence
+  first, measured from the last real signal (an email from the employer, a
+  stage change, or the date you applied) rather than from the date applied
+  alone, so a long process that moved yesterday is not flagged as neglected
+- **Recruiter contact** — the sender of every classified email is recorded
+  against the application, so replying does not mean going back to Gmail to
+  find out who wrote
 
 ### 2. Resume Match Analysis 🧠
 
@@ -158,10 +165,16 @@ This flow shows how Talent Pilot connects browser context, resume profiles, AI a
 
 ### 5. Chrome Extension Copilot 🧩
 
-- Detect job pages on LinkedIn, Greenhouse, Lever, Wellfound, and generic job sites
+- Detect job pages on LinkedIn, Greenhouse, Lever, Wellfound, Workday and the
+  other major applicant tracking systems, plus generic job sites
 - Analyze role fit from the browser popup
 - Save jobs directly to the local dashboard
-- Generate AI answers for text fields on application pages
+- Offer to track an application **as you submit it**, so one that was filled in
+  without opening the popup is not lost. Nothing is ever saved without a click,
+  and the offer survives the confirmation page the form navigates to
+- Generate AI answers for text fields on application pages, grounded in the
+  company, the role, the description captured when the job was saved, and the
+  resume profile you selected
 
 ---
 
@@ -437,9 +450,17 @@ build works for everybody and no personal data lives in the extension itself.
 5. Keep FastAPI running at `http://localhost:8000`
 6. Open the extension popup and **sign in with your dashboard account**
 
-The extension activates automatically on LinkedIn, Greenhouse, Lever,
-Wellfound, Ashby, and Workable. On any other site, open the popup and click
-**Enable Copilot on this site** to grant access to that origin only.
+The extension activates automatically on the major boards and applicant
+tracking systems — LinkedIn, Greenhouse, Lever, Wellfound, Ashby, Workable,
+Workday, SmartRecruiters, iCIMS, Jobvite, BambooHR, Breezy, Recruitee,
+Teamtailor, JazzHR, Zoho Recruit, Taleo, SuccessFactors, Work at a Startup,
+Pinpoint, Naukri and Indeed — including application forms embedded in an
+iframe on a company's own careers page.
+
+On any other site, open the popup and click **Enable Copilot on this site** to
+grant access to that origin only. That grant is permanent: the site is
+registered and the copilot runs there on every visit from then on, without
+asking again.
 
 ---
 
