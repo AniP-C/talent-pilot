@@ -56,14 +56,43 @@ function renderAnalysis(result) {
 
     const score = document.createElement("div");
     score.className = "score";
-    score.textContent = `Match score: ${result.match_percentage}%`;
+    score.textContent = `Recruiter fit: ${result.match_percentage}%`;
+
+    area.append(score);
+
+    // How that figure was reached. The number used to be the model's opinion;
+    // it is now computed from the requirement classifications, and saying so
+    // is the difference between a score and an assertion.
+    const coverage = result.coverage;
+    if (coverage?.required_total) {
+        const working = document.createElement("div");
+        working.className = "muted";
+        working.textContent =
+            `${coverage.required_met} of ${coverage.required_total} must-haves` +
+            (coverage.preferred_total
+                ? `, ${coverage.preferred_met} of ${coverage.preferred_total} preferred`
+                : "");
+        area.append(working);
+    }
+
+    // A filter matches text, not meaning, so a strong candidate can still be
+    // screened out. Reported separately because it is a different problem with
+    // a different fix.
+    const keywords = result.keyword_coverage;
+    if (keywords?.scored) {
+        const ats = document.createElement("div");
+        ats.className = "score";
+        ats.textContent = `Keyword coverage: ${keywords.score}%`;
+        area.append(ats);
+    }
 
     const summary = document.createElement("p");
     summary.className = "muted";
     summary.textContent = result.summary;
+    area.append(summary);
 
     const missingLabel = document.createElement("b");
-    missingLabel.textContent = "Missing skills: ";
+    missingLabel.textContent = "Missing: ";
 
     const missing = document.createElement("div");
     missing.append(
@@ -72,8 +101,17 @@ function renderAnalysis(result) {
             result.missing_skills.length ? result.missing_skills.join(", ") : "None"
         )
     );
+    area.append(missing);
 
-    area.append(score, summary, missing);
+    if (keywords?.missing?.length) {
+        const termsLabel = document.createElement("b");
+        termsLabel.textContent = "Terms not on your resume: ";
+
+        const terms = document.createElement("div");
+        terms.className = "muted";
+        terms.append(termsLabel, document.createTextNode(keywords.missing.join(", ")));
+        area.append(terms);
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -4,8 +4,9 @@ A plain explanation of the project: the problem it solves, how it is put
 together, the decisions that shaped it, and what broke along the way.
 
 The other documents cover different ground: [README.md](README.md) is the
-overview and setup guide, [TECHNICAL_OVERVIEW.md](TECHNICAL_OVERVIEW.md) is
-the internals reference, and [DEPLOYMENT.md](DEPLOYMENT.md) is for hosting it.
+overview and setup guide, [FEATURES.md](FEATURES.md) describes every feature in
+detail, [TECHNICAL_OVERVIEW.md](TECHNICAL_OVERVIEW.md) is the internals
+reference, and [DEPLOYMENT.md](DEPLOYMENT.md) is for hosting it.
 This one is the "why".
 
 **Live at [katchjobs.online](https://katchjobs.online).**
@@ -33,9 +34,12 @@ stands.
 
 ## What it actually does
 
-**Reads job pages.** A browser extension recognises listings on LinkedIn,
-Greenhouse, Lever, Wellfound, Ashby, and Workable, pulling out company, role,
-and the job description. Any other site can be enabled per-origin on demand.
+**Reads job pages.** A browser extension recognises listings on the major job
+boards and applicant tracking systems, pulling out company, role, and the job
+description. Any other site can be enabled per-origin on demand. (The supported
+list is in [README.md](README.md); it belongs in documentation and *not* in the
+Chrome Web Store listing, which was rejected once for exactly that — see
+[deploy/STORE_LISTING.md](deploy/STORE_LISTING.md).)
 
 **Scores the fit.** Gemini compares the description against a structured
 version of your resume and returns a match percentage, matched skills, missing

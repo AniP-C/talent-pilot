@@ -711,21 +711,87 @@ def render_analyzer(user: auth.User, db_path, selected_profile: str | None) -> N
         return
 
     st.write("")
-    score_col, summary_col = st.columns([1, 3])
-    with score_col:
-        st.metric("Match score", f"{result['match_percentage']}%")
+
+    coverage = result.get("coverage", {})
+    keywords = result.get("keyword_coverage", {})
+
+    # Two numbers because they answer different questions. A resume can read
+    # well to a person and still never reach one, because the first filter is
+    # frequently a literal string match that does not know Azure experience
+    # transfers to AWS.
+    fit_col, ats_col, summary_col = st.columns([1, 1, 3])
+    with fit_col:
+        st.metric("Recruiter fit", f"{result['match_percentage']}%")
+        if coverage.get("required_total"):
+            st.caption(
+                f"{coverage['required_met']:g}/{coverage['required_total']} must-haves"
+                + (
+                    f" · {coverage['preferred_met']:g}/{coverage['preferred_total']} preferred"
+                    if coverage.get("preferred_total")
+                    else ""
+                )
+            )
+    with ats_col:
+        if keywords.get("scored"):
+            st.metric("Keyword coverage", f"{keywords['score']}%")
+            st.caption(f"{len(keywords['matched'])}/{keywords['total']} terms present")
+        else:
+            st.metric("Keyword coverage", "—")
+            st.caption("No known terms found in this posting")
     with summary_col:
         st.info(result["summary"])
 
-    matched_col, missing_col = st.columns(2)
-    with matched_col:
-        st.markdown("**✅ Matched skills**")
-        for skill in result["matched_skills"] or ["—"]:
-            st.markdown(f"- {skill}")
-    with missing_col:
-        st.markdown("**❌ Missing skills**")
-        for skill in result["missing_skills"] or ["—"]:
-            st.markdown(f"- {skill}")
+    # The requirement table is the score's working. A percentage nobody can
+    # take apart is the thing this replaced.
+    requirements = result.get("requirements") or []
+
+    if requirements:
+        st.markdown("**How that score is made up**")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Requirement": r["skill"],
+                        "Weight": "Must have" if r["importance"] == "required" else "Preferred",
+                        "Evidence": {
+                            "demonstrated": "✅ Demonstrated",
+                            "partial": "🟡 Partial",
+                            "absent": "❌ Absent",
+                        }.get(r["status"], r["status"]),
+                        "Where": r["evidence"] or "—",
+                    }
+                    for r in requirements
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Requirement": st.column_config.TextColumn(width="medium"),
+                "Weight": st.column_config.TextColumn(width="small"),
+                "Evidence": st.column_config.TextColumn(width="small"),
+                "Where": st.column_config.TextColumn(width="large"),
+            },
+        )
+    else:
+        matched_col, missing_col = st.columns(2)
+        with matched_col:
+            st.markdown("**✅ Matched skills**")
+            for skill in result["matched_skills"] or ["—"]:
+                st.markdown(f"- {skill}")
+        with missing_col:
+            st.markdown("**❌ Missing skills**")
+            for skill in result["missing_skills"] or ["—"]:
+                st.markdown(f"- {skill}")
+
+    # The terms a filter looks for and cannot find. These are the literal
+    # strings worth surfacing on the resume — provided they are true.
+    if keywords.get("missing"):
+        st.markdown("**Terms this posting uses that your resume does not**")
+        st.caption(
+            "A keyword filter matches text, not meaning. Add only the ones you "
+            "can genuinely claim."
+        )
+        st.markdown(" · ".join(f"`{term}`" for term in keywords["missing"]))
 
 
 # =====================================================================

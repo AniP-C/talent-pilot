@@ -7,8 +7,9 @@ Talent Pilot is a local-first job search automation system that helps you track 
 ---
 
 > 📖 **New here?** [PROJECT.md](PROJECT.md) explains what this is, how it is
-> put together, and the decisions behind it. For internals see
-> [TECHNICAL_OVERVIEW.md](TECHNICAL_OVERVIEW.md); for hosting see
+> put together, and the decisions behind it. [FEATURES.md](FEATURES.md) is the
+> complete feature-by-feature description of what the product does. For
+> internals see [TECHNICAL_OVERVIEW.md](TECHNICAL_OVERVIEW.md); for hosting see
 > [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ---
@@ -456,6 +457,11 @@ Workday, SmartRecruiters, iCIMS, Jobvite, BambooHR, Breezy, Recruitee,
 Teamtailor, JazzHR, Zoho Recruit, Taleo, SuccessFactors, Work at a Startup,
 Pinpoint, Naukri and Indeed — including application forms embedded in an
 iframe on a company's own careers page.
+
+> **Do not paste this list into the Chrome Web Store listing.** It is accurate
+> documentation here and keyword spam there; a listing naming these sites has
+> already been rejected once. Store copy lives in
+> [deploy/STORE_LISTING.md](deploy/STORE_LISTING.md).
 
 On any other site, open the popup and click **Enable Copilot on this site** to
 grant access to that origin only. That grant is permanent: the site is

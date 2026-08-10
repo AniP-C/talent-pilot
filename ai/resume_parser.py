@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import scoring
 import workspace
 from ai.gemini import generate_structured
 from config import logger
@@ -18,10 +19,21 @@ from config import logger
 # =====================================================================
 # STRUCTURED OUTPUT SCHEMAS
 # =====================================================================
+class Requirement(BaseModel):
+    """One thing the job asks for, and whether the resume shows it.
+
+    Deliberately carries no score. The model classifies; ``scoring.py`` does
+    the arithmetic — see that module for why.
+    """
+
+    skill: str
+    importance: str   # required | preferred
+    status: str       # demonstrated | partial | absent
+    evidence: str     # where in the resume, or "" when absent
+
+
 class JDAnalysis(BaseModel):
-    match_percentage: int
-    matched_skills: list[str]
-    missing_skills: list[str]
+    requirements: list[Requirement]
     summary: str
 
 
@@ -117,11 +129,48 @@ def save_answer_to_memory(user_id: int, question: str, answer_text: str) -> str:
 # PUBLIC ENDPOINTS
 # =====================================================================
 def analyze_jd(jd_text: str, resume_data: str) -> dict:
-    """Score a resume against a job description."""
+    """Compare a resume to a job description.
+
+    The model is asked only to classify each requirement. The percentage is
+    computed from those classifications in ``scoring.py``, so it is
+    reproducible and can be shown with its working. Asking the model for the
+    number produced one that ignored its own findings — an analysis listing a
+    dozen absent requirements still came back 90%.
+    """
     prompt = f"""
-    You are an expert Tech Recruiter/ATS system.
-    Analyze the following Job Description against the provided Resume.
-    Identify matched skills, missing skills, and summarize the gap honestly.
+    You are a technical recruiter assessing one candidate against one job.
+
+    List every distinct requirement the job description states, and for each
+    one decide:
+
+      importance  "required"  the job presents it as a must-have.
+                  "preferred" the job calls it preferred, a bonus, a plus, or
+                              nice to have.
+
+      status      "demonstrated" the resume shows clear, specific evidence.
+                  "partial"      the resume shows something adjacent or
+                                 transferable but not the thing itself — a
+                                 different cloud provider, or the underlying
+                                 technique without the named tool.
+                  "absent"       there is no evidence in the resume.
+
+      evidence    where in the resume you saw it, or "" when absent.
+
+    RULES:
+    1. One entry per distinct requirement. Never list the same skill twice
+       under different names: "LLM" and "Large Language Models" are one
+       requirement, as are "GCP" and "Google Cloud".
+    2. Only concrete skills, tools, platforms, and domain experience. Never
+       list job-description prose such as "collaborate", "best practices",
+       "solutions", "technical" or "development".
+    3. Do not award "demonstrated" for something the resume merely implies.
+       Adjacent evidence is "partial". Be strict: this assessment is only
+       useful if it is honest about gaps.
+    4. Do not produce a score or a percentage anywhere. The score is computed
+       from your classifications.
+
+    Then write a short summary of the fit, naming the strongest evidence and
+    the most significant gaps.
 
     JOB DESCRIPTION:
     {jd_text[:8000]}
@@ -129,7 +178,30 @@ def analyze_jd(jd_text: str, resume_data: str) -> dict:
     RESUME:
     {resume_data[:8000]}
     """
-    return generate_structured(prompt, JDAnalysis, "JD_ANALYSIS")
+    result = generate_structured(prompt, JDAnalysis, "JD_ANALYSIS")
+
+    if "error" in result:
+        return result
+
+    requirements = scoring.normalise_requirements(result.get("requirements"))
+    coverage = scoring.score_requirements(requirements)
+    keywords = scoring.keyword_coverage(jd_text, resume_data)
+
+    return {
+        # Kept so the dashboard and the extension popup continue to work; both
+        # read these three, and neither should have to know how the number is
+        # arrived at.
+        "match_percentage": coverage["score"],
+        "matched_skills": [
+            r["skill"] for r in requirements if r["status"] != "absent"
+        ],
+        "missing_skills": [r["skill"] for r in requirements if r["status"] == "absent"],
+        "summary": result.get("summary", ""),
+        # The working behind the number, plus the filter's-eye view.
+        "requirements": requirements,
+        "coverage": coverage,
+        "keyword_coverage": keywords,
+    }
 
 
 def generate_smart_answer(
