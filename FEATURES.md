@@ -189,6 +189,31 @@ company and the popup asks you to type it. A wrong company is worse than no
 company: it becomes a corrupt row that only surfaces weeks later as a
 duplicate.
 
+**Salary and location come from the same block.** The JSON-LD `JobPosting`
+declares `baseSalary` and `jobLocation`, and both were being parsed past and
+thrown away. They are now captured and shown on the card, in the popup, and as
+**Where** and **Pay** columns in the tracker.
+
+The salary is stored as *numbers* — minimum, maximum, currency, period — rather
+than as a display string, so it can be filtered and compared later rather than
+only read. A posting quoting one figure stores it as a range of width zero, so
+every reader handles one shape instead of three.
+
+**Only the declared field is trusted for pay.** A salary is read from the
+JSON-LD block and nowhere else. "Competitive package, £70k OTE" in a paragraph
+is not a stated number, and a board that renders a range without declaring it is
+a board whose markup will move. An empty salary field is corrected by the next
+posting; a wrong one is a number you make a decision on. The location is less
+dangerous to get wrong, so it does fall back to a per-board selector — which is
+what covers LinkedIn, where no JSON-LD block exists at all.
+
+What else it will not accept: an ambiguous currency symbol (`$` is USD, CAD, AUD,
+SGD and more, so the amount is kept and the currency is not), an amount that
+cannot be a salary (a requisition id, an epoch timestamp), and a period the
+amount cannot be quoted in — £120,000 *per hour* keeps the number and drops the
+period. "Remote" in the location slot becomes the remote flag rather than the
+place, so the two can never disagree.
+
 ---
 
 ## 6. Match analysis and scoring
@@ -201,9 +226,35 @@ numbers, because there are two different questions.
 | **Recruiter fit** | Would a person reading this think you can do the job? |
 | **Keyword coverage** | Will an automated filter surface you at all? |
 
-**How to use it.** Click **Analyze match** in the extension popup, or use the
-dashboard's **Analyzer** tab against any saved application that has a job
-description.
+**Where you see it.** Three places, and the first one you do not have to ask
+for:
+
+| Surface | What it shows | What it costs |
+| ------- | ------------- | ------------- |
+| **The card in the job page** | Keyword coverage, on arrival | Nothing |
+| Same card, **Full AI match** | Recruiter fit, gaps, summary | One model call |
+| Extension popup → **Analyze match** | The same, in the popup | One model call |
+| Dashboard → **Analyzer** tab | The same, plus the requirement table | One model call |
+
+**The card in the page.** Open a posting on a supported board and a card
+appears just above the job description with the keyword score already computed:
+"4 of 9 keywords are in your resume", the terms you have, and the terms you do
+not. **Full AI match** turns it into the requirement-by-requirement verdict;
+**Save** files the job without opening the popup.
+
+It scans on arrival because that half is free — keyword coverage is string
+matching with no model behind it, so showing it unprompted costs nothing. The
+paid analysis stays behind a button. This is the same rule as the inbox filter:
+the cheap pass first, the expensive one only once it has earned the call.
+
+The card renders into a **closed shadow root**. A job board's stylesheet cannot
+reach in and wreck it, and — the reason that matters — page scripts cannot read
+back out. Which skills you lack and how poorly you match is your business, not
+the employer's.
+
+It can be turned off in the popup's **Settings** panel, and closed for one page
+with the **✕**. Closing hides it; only the setting turns it off everywhere,
+because a close button that silently disables a feature is a trap.
 
 **How recruiter fit is calculated.** The model classifies; Python scores. Every
 requirement the posting states is listed and classified:
@@ -370,8 +421,8 @@ and it is skipped entirely for a job already in your tracker.
 **What it is.** Every application, with search, filters and summary metrics.
 
 **What is stored per application.** Company, role, job description, status,
-date applied, link, notes, source, which resume was used, recruiter contact,
-and timestamps.
+date applied, link, notes, source, which resume was used, the posting's location
+and salary, recruiter contact, and timestamps.
 
 **Statuses.**
 
@@ -384,8 +435,14 @@ and timestamps.
 | 🟢 Offer | Offer made |
 | 🔴 Rejected | Closed |
 
-**What you can do.** Search by company or role, filter by status, change a
-status, add an application by hand, read notes, view stage history, and delete.
+**What you can do.** Search by company, role or location, filter by status,
+show only remote roles, change a status, add an application by hand, read notes,
+view stage history, and delete.
+
+**Where and Pay.** Two columns rendered from what the posting declared about
+itself. They are formatted for reading and stored structured, so "which of these
+paid over 20 lakh?" stays answerable later — the same reason the score is
+computed from classifications rather than asked for as a number.
 
 **Duplicates.** "Already tracked" is a unique index on
 `(LOWER(company), LOWER(role))` — enforced by the database rather than by a
@@ -461,7 +518,11 @@ nothing else — it cannot send, delete, or modify anything.
 3. A keyword rule filter runs next, so newsletters never reach a paid call. It
    matches phrases rather than bare words, because "offer" alone also matches
    "limited time offer" — exactly the marketing mail it exists to exclude.
-4. What survives is classified by Gemini into a status, a company, and a role.
+4. What survives is classified by Gemini in a single call into a status, a
+   company, a role, the recruiter's name, address and phone, what you have to do
+   next, and any deadline the message sets. All of it comes from one request —
+   asking for more structure costs nothing extra, and each field removes a guess
+   the pipeline would otherwise make on its own.
 5. The matching application is updated, or a new one is created.
 
 **When it declines to act.** Every skip is logged with its reason: the category
@@ -479,24 +540,65 @@ row is created rather than corrupting a good one.
 
 ## 15. Recruiter contacts
 
-**What it is.** Who to reply to, recorded automatically against each
-application.
+**What it is.** Who to reply to — name, address and direct line — recorded
+automatically against each application.
 
-**Why it exists.** Inbox sync always knew the sender of every email it
-classified and discarded it, so "who is handling this?" was a question the
-tracker could not answer about its own data.
+**Why it exists.** Inbox sync always knew far more about a message than the
+tracker kept. Only the `From` header was recorded, and only when it looked
+replyable, so an ATS relay (`no-reply@greenhouse.io`) left the application with
+no contact at all — even when the mail set a `Reply-To` to the recruiter and
+signed off with their name and mobile. "Who is handling this?" was a question
+the tracker could not answer about its own data.
 
-**How it behaves.** The sender of each classified email is recorded, and shown
-as a mailto link in both the follow-up panel and the application editor.
+**Where it looks, strongest signal first.** Headers beat prose, and prose beats
+a guess:
 
-**Two judgement calls.** Send-only mailboxes — `no-reply@`, `notifications@`,
-`mailer@` — are never stored as contacts, because a mailbox that cannot receive
-reads as somebody to reply to and is worse than nothing. And a later automated
-message never displaces a human already on the record.
+| Source | Why it ranks there |
+| ------ | ------------------ |
+| `Reply-To` | Set by the sending system. On ATS mail this is the employer while `From` is the vendor. |
+| `From` | The same, one step weaker — it is often the relay. |
+| The signature, as read by the model | A person typed it, but the model is reading attacker-controlled text. |
+| The first replyable address in the body | No name attached, but better than nothing. |
+
+The same ordering picks the company: a `Reply-To` domain identifies the employer
+on mail that `From` attributes to Greenhouse.
+
+**The model is not trusted.** An email body is written by whoever sent it, so an
+address or a number the model reports is accepted **only when the body verbatim
+contains it**. A message cannot conjure a contact it does not name, and cannot
+conjure one at all if the model was the only source. A body saying "reply to
+payments@acme-verify.example to release your offer" gets recorded as a mentioned
+address and never as the person to contact.
+
+**What is stored where.** Columns are for "who do I reply to": name, address,
+phone, last heard. The note is for "what did this say": the sender, every other
+address the message named, what you have to do next, and any deadline. A shared
+`careers@` inbox is context worth keeping and not somebody to phone, and the
+split is the point.
+
+**Judgement calls.**
+
+- Send-only mailboxes — `no-reply@`, `notifications@`, `mailer@`, and per-message
+  bounce addresses at ESP domains — are never stored as contacts. A mailbox that
+  cannot receive reads as somebody to reply to, which is worse than nothing.
+- Your own address is excluded explicitly. It appears in almost every
+  confirmation ("we received your application from you@gmail.com") and would
+  otherwise be recorded as the recruiter.
+- A phone number needs evidence: a label ("Mobile:", "Direct line") or an
+  international prefix. A bare run of digits is a requisition id or a salary
+  band as often as a number, and a wrong number in a tracker eventually gets
+  dialled.
+- A name is kept even when every address was a robot. "Priya in Acme Talent said
+  X" is still more than an empty field.
+- A later automated message never displaces a human already on the record.
 
 **But automated mail still counts as contact.** An ATS acknowledgement is the
 employer making contact, and that is what the follow-up clock measures silence
 against.
+
+**Where you see it.** As a `mailto:` and a `tel:` link in both the follow-up
+panel and the application editor — the point of capturing them is that replying
+is one click rather than one trip back to Gmail.
 
 ---
 
@@ -515,6 +617,11 @@ decision about your data, so it belongs somewhere you can actually see it.
 **API address.** The extension can be pointed at a local or hosted server.
 Changing it requests permission for that origin and clears the session, since a
 token from one server is meaningless to another.
+
+**The in-page match card.** On by default, and switched off from the same
+Settings panel. Injecting into somebody else's page is the kind of thing that
+should always have an off switch that is easy to find. Turning it off takes the
+card off pages that are already open, without a reload.
 
 **Backups.** Nightly, 14-day retention. The restore path has actually been
 exercised and the databases checked afterwards — an untested backup is not a

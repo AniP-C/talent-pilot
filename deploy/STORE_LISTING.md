@@ -46,10 +46,16 @@ retyping your own details on every application form.
 WHAT IT DOES
 
 • Reads the job posting you are looking at and pulls out the company, the
-  role, and the description.
+  role, the description, and — where the page states them — the location and
+  the salary.
 
-• Scores the posting against your resume, showing which of your skills match,
-  which are missing, and an honest summary of the gap.
+• Shows a match card on the posting itself, with the keyword score already
+  worked out: how many of the terms this job uses are in your resume, and which
+  are not. Turn the card off in Settings if you would rather it stayed in the
+  popup.
+
+• Scores the posting against your resume in full when you ask, showing which of
+  your skills match, which are missing, and an honest summary of the gap.
 
 • Saves the application to your tracker in one click — and when you submit an
   application form, offers to track it so the ones you forget to save are not

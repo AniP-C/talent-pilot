@@ -35,15 +35,19 @@ stands.
 ## What it actually does
 
 **Reads job pages.** A browser extension recognises listings on the major job
-boards and applicant tracking systems, pulling out company, role, and the job
-description. Any other site can be enabled per-origin on demand. (The supported
+boards and applicant tracking systems, pulling out company, role, the job
+description, and — where the page declares them — the location and the salary. Any other site can be enabled per-origin on demand. (The supported
 list is in [README.md](README.md); it belongs in documentation and *not* in the
 Chrome Web Store listing, which was rejected once for exactly that — see
 [deploy/STORE_LISTING.md](deploy/STORE_LISTING.md).)
 
-**Scores the fit.** Gemini compares the description against a structured
-version of your resume and returns a match percentage, matched skills, missing
-skills, and an honest summary of the gap.
+**Scores the fit, before you ask.** Open a posting and a card appears above the
+description with the keyword score already in it — how many of the terms this job
+names are in your resume, and which are not. That half is free: it is string
+matching over a curated vocabulary with no model behind it, so there is no reason
+to make anyone ask for it. **Full AI match** on the same card spends the model
+call and returns the requirement-by-requirement verdict, the gaps, and an honest
+summary.
 
 **Parses resumes.** Upload a PDF and it becomes a structured profile. Keep
 several — one per target role — and switch between them.
@@ -54,7 +58,9 @@ like you rather than like a language model.
 
 **Watches your inbox.** With Gmail connected, recruiter mail is classified
 into application states and the matching record updates itself. A cheap rule
-filter runs first so newsletters never reach a paid AI call.
+filter runs first so newsletters never reach a paid AI call. Each message also
+gives up who to reply to — name, address, direct line — and what it wants from
+you next.
 
 **Catches the ones you forget.** Saving used to be a click in the popup, so an
 application filled in without remembering to click it was never tracked at all.
@@ -158,6 +164,65 @@ name, or recording an application they did not tell us about, are both the kind
 of helpfulness that is indistinguishable from a bug when it gets something
 wrong.
 
+### The free half of the score is shown unasked; the paid half is not
+
+A number you have to click for is a number you ask for *after* you have already
+spent the attention deciding whether the posting is worth reading. That is the
+wrong order, and it is the whole reason two other extensions put a score in the
+page rather than in a popup.
+
+It only works because the score splits cleanly by cost. Keyword coverage is
+string matching over a curated vocabulary — no model, no network, same answer
+every time — so it can run on arrival at every posting and nobody pays for it.
+The requirement-by-requirement analysis is a Gemini call, so it stays behind a
+button. Two numbers, two costs, two different placements.
+
+The endpoint that serves it is pinned by a test that breaks `generate_structured`
+and asserts the scan still answers. Growing an AI call there would mean billing
+somebody for opening a page.
+
+### The card renders where the page cannot read it
+
+The card lives in a **closed shadow root**. The style isolation is convenient —
+a job board's CSS cannot reach in — but the reason it is closed rather than open
+is that page scripts cannot read back out. Which requirements the user fails,
+and how badly they match, is not information to hand the employer whose page it
+is being displayed on. Same reasoning as the form suggestions, which show only
+the question label and never the saved answer until a click moves it into a field.
+
+### A salary is only taken from a field that declares itself one
+
+Salary and location come out of the JSON-LD `JobPosting` block — the same block
+already being read for company and role, and the same two fields already being
+parsed past and discarded. Nothing else is consulted for the salary. Not the
+description prose, not a per-board selector, not the page title.
+
+That is narrower than it could be, deliberately. "Competitive package, £70k OTE"
+in a paragraph is a sentence, not a number, and a board that renders a range
+without declaring it will move that markup eventually. A salary is a figure
+somebody makes a decision on, so an empty field — which the next posting
+corrects — beats a plausible wrong one. The location does fall back to a
+per-board selector, because getting a city wrong costs nothing comparable, and
+that fallback is the only thing covering LinkedIn, which declares no block at all.
+
+It is stored as four columns rather than one string, for the same reason the
+match score is computed rather than asked for: a number you can compare is worth
+more than a sentence you can only read. "Which of these paid over 20 lakh?" has
+to still be answerable in six months.
+
+### A model's reading of an email is a lead, not a fact
+
+Inbox sync now extracts a recruiter's name, address and phone number, which means
+a value that reaches the user came out of text an unverified sender wrote. So the
+model's answer is checked rather than stored: an address or a number is accepted
+only when the body it was read from verbatim contains it, and a `Reply-To` header
+outranks it either way. A message can no longer name the person to contact — only
+the model's reading of a person the message already named.
+
+The ordering falls out of one principle. Headers were set by a sending system, a
+signature block was typed by a person, and a model's reading of either is a
+convenience. So: header, then prose, then guess.
+
 ### Cheap filters before expensive calls
 
 Inbox sync runs a keyword rule engine before any AI call, and records which
@@ -234,18 +299,23 @@ because a restore was actually performed and the databases checked afterwards.
 
 | | |
 | --- | --- |
-| Tests | 397, no network calls — including two jsdom suites driving the real extension code |
-| API endpoints | 20 |
+| Tests | 562, no network calls — including three jsdom suites driving the real extension code |
+| API endpoints | 24 |
 | Hosting | GCE `e2-micro`, us-west1, free tier |
 | TLS | Let's Encrypt via Caddy, auto-renewing |
 | Backups | Nightly, 14-day retention, restore-verified |
 
 Tests cover password hashing and token lifecycle, storage rules, path
 traversal across several attack shapes, upload validation, the email filter,
-follow-up detection and contact capture, the v2→v3 migration on a database
-built the old way, and the API's authentication and isolation guarantees. The Gemini and Gmail
-wrappers are deliberately untested — they are thin shims over external
-services, and the logic worth testing sits in pure functions around them.
+follow-up detection, contact selection and the refusal to trust the model about
+an address, salary and location normalisation and everything it rejects, the
+v2→v3, v3→v4 and v4→v5 migrations on databases built the old way, and the API's
+authentication and isolation guarantees. The jsdom suites drive the real
+`content.js`: form suggestions, extraction across every board's title format and
+every JSON-LD salary shape, and the in-page card — including that its score never
+reaches the page's own DOM. The Gemini and Gmail wrappers are deliberately untested — they are thin
+shims over external services, and the logic worth testing sits in pure functions
+around them.
 
 ---
 
@@ -289,6 +359,8 @@ around 250 ms of round-trip on every page load.
   `status_history` already records what this needs
 - Near-duplicate detection: "Sr. AI Engineer" and "Senior AI Engineer" at one
   company are still two rows, because the uniqueness index is exact
-- Capture `datePosted`, `validThrough`, `baseSalary` and `jobLocation` from the
-  JSON-LD block already being parsed for company and role, and thrown away
+- Capture `datePosted` and `validThrough` from the JSON-LD block too. The salary
+  and location are now read from it; those two are what remain, and together they
+  are most of a ghost-job signal — "reposted four times in six months" is a fact
+  the block already states
 - Postgres, if it ever needs to serve more than a few people

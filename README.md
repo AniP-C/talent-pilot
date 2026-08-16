@@ -103,7 +103,7 @@ Unlike a normal spreadsheet tracker, Talent Pilot can also reason over job descr
 ```mermaid
 flowchart TD
     U[User opens a job page] --> EXT[Chrome Extension scans page]
-    EXT --> EXTRACT[Extract company, role, JD, and link]
+    EXT --> EXTRACT[Extract company, role, JD, link, location, and salary]
     EXTRACT --> PROFILE[Choose active resume profile]
     PROFILE --> API[FastAPI backend]
     API --> GEMINI[Gemini analysis]
@@ -132,8 +132,9 @@ This flow shows how Talent Pilot connects browser context, resume profiles, AI a
 ### 1. Job Tracking Dashboard 📊
 
 - Add job applications manually
-- Store company, role, job description, status, source, resume used, and notes
-- Filter applications by company, role, and status
+- Store company, role, job description, status, source, resume used, notes, and
+  the posting's own location and salary
+- Filter applications by company, role, location, status, and remote-only
 - Export selected applications as CSV
 - **Needs a nudge** — live applications that have gone quiet, longest silence
   first, measured from the last real signal (an email from the employer, a
@@ -145,9 +146,14 @@ This flow shows how Talent Pilot connects browser context, resume profiles, AI a
 
 ### 2. Resume Match Analysis 🧠
 
-- Select a resume profile JSON
-- Analyze a job description using Gemini
-- Return match percentage, matched skills, missing skills, and recruiter-style summary
+- **In the page, on arrival** — a card above the job description showing keyword
+  coverage: how many of the terms this posting uses are in your resume, and which
+  are not. No model call, so it costs nothing and needs no click. Switch it off
+  in the popup's Settings panel.
+- **On request** — Gemini classifies every requirement the posting states, and
+  [scoring.py](scoring.py) turns those classifications into the recruiter-fit
+  percentage, the gaps, and a recruiter-style summary
+- Select a resume profile JSON to compare against
 
 ### 3. PDF Resume Onboarding 📄
 
@@ -159,16 +165,27 @@ This flow shows how Talent Pilot connects browser context, resume profiles, AI a
 ### 4. Gmail Sync 📬
 
 - Connect to Gmail using OAuth
-- Fetch recent job-related emails
+- Fetch recent job-related emails, with the `Reply-To` and `Cc` headers — on ATS
+  mail, `From` is the vendor and `Reply-To` is the employer
 - Filter likely recruiting emails before sending to AI
-- Classify email status with Gemini
+- Classify email status with Gemini, and in the same call pull out the
+  recruiter's name, address and direct line, what you have to do next, and any
+  deadline the message sets
+- Record who to reply to against the application, as a `mailto:` and a `tel:`
+  link. An address or a number the model reports is only accepted when the email
+  body verbatim contains it — see [contacts.py](contacts.py)
 - Update matching job records in the local database
 
 ### 5. Chrome Extension Copilot 🧩
 
 - Detect job pages on LinkedIn, Greenhouse, Lever, Wellfound, Workday and the
   other major applicant tracking systems, plus generic job sites
-- Analyze role fit from the browser popup
+- Read the location and salary the posting declares in its JSON-LD `JobPosting`
+  block, and save them with the application. The salary is taken from that block
+  and nowhere else — prose is not a declared field, and a wrong salary is worse
+  than none
+- Show the match card in the posting itself, and analyze role fit in full from
+  the card or the popup
 - Save jobs directly to the local dashboard
 - Offer to track an application **as you submit it**, so one that was filled in
   without opening the popup is not lost. Nothing is ever saved without a click,
@@ -323,6 +340,8 @@ names the account — so a caller cannot act on someone else's workspace.
 ├── auth.py                   # Registration, sign-in, password hashing, tokens 🔑
 ├── workspace.py              # Per-user paths and path-traversal defences 📂
 ├── db.py                     # SQLite job storage 🗃️
+├── contacts.py               # Who to reply to, chosen from one email 📇
+├── posting.py                # Salary and location normalisation 💰
 ├── config.py                 # Paths, status SSOT, settings, logging ⚙️
 ├── utils.py                  # Profile loading and sync timestamps 🧰
 ├── sync_controller.py        # Gmail sync orchestration 📬
@@ -504,6 +523,7 @@ Tokens come from `/auth/register` or `/auth/login` and are valid for 30 days.
 | `POST` | `/check-job` | Whether a company + role is already tracked |
 | `POST` | `/save-job` | Save a detected job (409 if duplicate) |
 | `PATCH`| `/jobs/{id}/status` | Update an application's status |
+| `POST` | `/keyword-scan` | Keyword coverage only — no model call, so the in-page card can run it on arrival |
 | `POST` | `/analyze-job` | Score a JD against your resume |
 | `POST` | `/generate-answer` | Draft an application answer |
 | `POST` | `/save-answer` | Store an answer in your memory bank |

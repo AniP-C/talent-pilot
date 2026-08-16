@@ -77,6 +77,8 @@ flowchart LR
 |-- auth.py                 Accounts, password hashing, API tokens
 |-- workspace.py            Per-user paths and path-traversal defences
 |-- db.py                   Job storage (per workspace)
+|-- contacts.py             Recruiter contact selection (pure)
+|-- posting.py              Salary and location normalisation (pure)
 |-- config.py               Paths, status SSOT, settings, logging
 |-- utils.py                Profile loading, sync timestamps
 |-- sync_controller.py      Gmail sync orchestration
@@ -216,8 +218,15 @@ CREATE TABLE jobs (
     notes        TEXT,
     source       TEXT NOT NULL DEFAULT 'Manual',
     resume_used  TEXT,
+    location        TEXT,      -- v5: from the posting's JSON-LD block
+    remote          INTEGER NOT NULL DEFAULT 0,
+    salary_min      INTEGER,   -- v5: numbers, not a display string, so a
+    salary_max      INTEGER,   --     salary can be filtered and compared
+    salary_currency TEXT,
+    salary_period   TEXT,      --     HOUR | DAY | WEEK | MONTH | YEAR
     contact_name    TEXT,      -- v3: who to reply to
     contact_email   TEXT,
+    contact_phone   TEXT,      -- v4: the direct line off a signature block
     last_contact_at TEXT,      -- v3: when the employer last made contact
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
@@ -243,21 +252,32 @@ Key properties:
   back on exception, and always closes — which on Windows is the difference
   between a clean exit and a locked file.
 - **Migrations are version-stamped** via `PRAGMA user_version`, and opening a
-  database written by a newer schema raises rather than corrupting it. The v3
-  step checks `PRAGMA table_info` before each `ALTER TABLE`, so a fresh
+  database written by a newer schema raises rather than corrupting it. The v3,
+  v4 and v5 steps check `PRAGMA table_info` before each `ALTER TABLE`, so a fresh
   database — where `_SCHEMA` already created the columns but `user_version` is
   still 0 — passes through without either failing or swallowing a real error.
+- **`add_job` takes the salary as one dict**, `posting.normalise_salary()`'s
+  output, rather than four arguments — the four are only meaningful together, and
+  `None` records "no salary" rather than a salary of zero.
 - **`processed_emails`** makes repeat inbox syncs no-ops.
 - **`get_followups()`** returns live applications ordered by silence, measured
   as `MAX(last_contact_at, latest status_history entry, date_applied)`. Rows
   with no usable timestamp are surfaced rather than hidden — a job nothing is
   known about is exactly the kind that gets forgotten. Terminal statuses are
   excluded.
-- **`is_replyable()`** keeps send-only mailboxes (`no-reply@`, `notifications@`)
-  out of `contact_email`, and the contact columns are written with `COALESCE`
-  so a later automated message cannot displace a human already on the record.
-  `last_contact_at` moves either way: an automated acknowledgement is still the
-  employer making contact, and that is what silence is measured against.
+- **Contacts come from [`contacts.py`](contacts.py)**, which is re-exported here
+  as `is_replyable()` for callers that only need the one rule. Send-only
+  mailboxes (`no-reply@`, `notifications@`, ESP bounce addresses) never reach
+  `contact_email`, and the contact columns are written with `COALESCE` so a later
+  automated message cannot displace a human already on the record. The phone is
+  stored independently of the address, because an ATS relay carries no replyable
+  address at all and still signs off with a direct line. `last_contact_at` moves
+  either way: an automated acknowledgement is still the employer making contact,
+  and that is what silence is measured against.
+- **`compose_email_note()`** is the note one classified email leaves behind: the
+  sender, the chosen contact, every other address the message named, the next
+  action, and any deadline. Columns answer "who do I reply to"; the note answers
+  "what did this say".
 
 ### `auth.py`
 
@@ -384,15 +404,90 @@ sync_inbox_to_db(user_id, progress_callback=None, throttle_seconds=4.0) -> dict
 ```
 
 Flow: resolve the user's workspace → fetch → drop already-processed message ids
-→ classify → map category to status → write → mark processed. Returns
-`{"fetched", "updated", "created", "skipped", "failed"}`.
+→ classify → map category to status → choose the contact → write → mark
+processed. Returns
+`{"fetched", "updated", "created", "noted", "skipped", "failed", "needs_review", "contacts", "run_id"}`.
 
-Two details:
+Details:
 
 - The throttle sleeps **between** calls, not after the last one, so a
   single-email sync does not sit idle at the end.
 - Unusable results are still marked processed, so the next run does not pay to
   classify the same noise again.
+- The mailbox's own address is read **once per run** and excluded from contact
+  selection. It is in `To`, in `Cc`, and quoted in the body of nearly every
+  confirmation, so without it the first address in a message is as likely to be
+  the user as the recruiter. Best-effort: a failure there means one fewer
+  exclusion, not a failed sync.
+- Contact selection is logged on its own line, with which signal won. "Why is
+  this the contact?" has to be answerable months later.
+
+### `posting.py`
+
+```python
+normalise_salary(min, max, currency, period) -> {"min","max","currency","period"}
+format_salary(min, max, currency, period) -> str
+normalise_location(text) -> str
+format_location(location, remote) -> str
+normalise_period(text) -> str          # HOUR | DAY | WEEK | MONTH | YEAR | ""
+normalise_currency(text) -> str        # three-letter code, or ""
+looks_remote(text) -> bool
+```
+
+Pure, and the counterpart to `job_fields.py`: these values also arrive from a
+client the server does not control, read out of a page the server never sees, so
+they are checked rather than believed. The standing rule is the codebase's usual
+one — **report nothing rather than something wrong**, because an empty salary
+field is corrected by the next posting and a wrong one is a number somebody makes
+a decision on.
+
+What it rejects, and why each case exists:
+
+| Input | Result |
+| ----- | ------ |
+| `1755302400000` | Dropped. An epoch timestamp or requisition id, not a salary |
+| `160000, 120000` | Swapped. A scrape that read the fields in page order |
+| `120000` per `HOUR` | Number kept, period dropped — a yearly figure whose `unitText` was misread |
+| `$` | Amount kept, currency dropped. `$` is USD, CAD, AUD, SGD and more |
+| a single figure | Stored as a range of width zero, so readers handle one shape |
+| `"Remote"` as a location | Becomes the remote flag, never both |
+
+`format_salary` is mirrored by `describeFacts` in `content.js` and `popup.js`,
+which render the same fields for the card and the popup. Both group digits by
+hand rather than with `toLocaleString`: that follows the browser's locale, so one
+salary would read `1,800,000` in one browser and `18,00,000` in another, and
+neither would match the dashboard, which has no locale to follow.
+
+### `contacts.py`
+
+```python
+is_replyable(address) -> bool
+parse_sender(header) -> (name, address)
+header_addresses(header) -> list[(name, address)]
+find_addresses(text, exclude=()) -> list[str]
+find_phone_numbers(text) -> list[str]
+choose_contact(*, sender, reply_to, body, suggested_*, exclude) -> dict
+```
+
+Pure text work — no I/O, no network, no model call — which is what lets it be
+the layer that distrusts the model. `choose_contact` takes addresses in strength
+order (`Reply-To`, `From`, the model's reading of the body, the first replyable
+address the body contains) and returns `{name, email, phone, source, mentioned}`.
+
+Two rules carry the weight:
+
+- **Headers beat prose, and prose beats a guess.** A `Reply-To` was set by a
+  sending system; a signature was typed by a person; a model's reading of either
+  is a convenience.
+- **An address or number the model reports is accepted only when the body
+  verbatim contains it.** An email body is attacker-controlled, so a message
+  cannot plant a contact it does not name — and cannot plant one at all if the
+  model was the only source. Rejected suggestions land in `mentioned`, which is
+  recorded in the note rather than promoted to a column.
+
+Phone numbers need a label (`Mobile:`, `Direct line`) or an international prefix.
+A bare digit run is a requisition id or a salary band as often as a number, and a
+wrong number in a tracker eventually gets dialled.
 
 ### Chrome extension
 
@@ -443,6 +538,30 @@ The content script re-reads the answer bank when background.js broadcasts
 retries a failed first load on a backoff. It previously fetched once and never
 again, so a page opened before signing in stayed empty for the life of the tab,
 which is indistinguishable from the feature being broken.
+
+**The in-page match card.** `content.js` draws a `<talent-pilot-match>` host into
+the posting — above the job description where an adapter or one of the fallback
+selectors can locate it, otherwise fixed in the bottom-right corner. It renders
+into a **closed** shadow root: the style isolation is convenient, but the reason
+it is closed is that page scripts cannot read back out, and the card names the
+requirements the user fails. The root handle lives in a `WeakMap` rather than on
+the node, since anything set on the element is readable by the page.
+
+Guards, because this is the one feature that draws into somebody else's page
+unprompted: top frame only, signed in only, a description of at least 400
+characters, `inPageCard !== false` in storage, and not dismissed for this page.
+A signature of `company|role|jd length` makes re-rendering idempotent, which is
+what stops the observer our own insertion triggers from looping; extraction is
+additionally throttled to once per 1.5 s because a job board mutates its DOM
+continuously.
+
+It scans through `KEYWORD_SCAN` → `POST /keyword-scan`, which runs no model call,
+so a score can appear without anyone having asked or paid for it. `background.js`
+caches those results by description (10 minutes, 30 entries, cleared on sign-in
+and sign-out) because a board re-renders the same posting several times per
+navigation. The `ANALYZE_JOB` path is unchanged and stays behind a click.
+`chrome.storage.onChanged` carries the setting and the active profile, so
+toggling either updates open pages without a reload.
 
 ## Runtime Flows
 
