@@ -7,13 +7,13 @@ Rows are returned as plain dicts keyed by column name — callers must never
 depend on column order, because migrations append columns.
 """
 
-import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
+import posting
 from config import (
     ACTIVE_STATUSES,
     DEFAULT_STATUS,
@@ -22,10 +22,16 @@ from config import (
     logger,
 )
 
+# Re-exported: the rule for "is this address a person?" belongs with the rest of
+# the contact logic, and callers already reach for it here.
+from contacts import is_replyable  # noqa: F401
+
 # Bumped whenever the schema changes; see _migrate().
 #   v1 -> v2  adds status_history
 #   v2 -> v3  adds the recruiter contact on each application
-SCHEMA_VERSION = 3
+#   v3 -> v4  adds the contact's phone number
+#   v4 -> v5  adds the posting's location and salary
+SCHEMA_VERSION = 5
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -39,11 +45,25 @@ CREATE TABLE IF NOT EXISTS jobs (
     notes        TEXT,
     source       TEXT NOT NULL DEFAULT 'Manual',
     resume_used  TEXT,
+    -- v5: read from the JSON-LD JobPosting block the extension already parses
+    -- for company and role. Declared fields rather than prose, which is what
+    -- makes them worth storing; the salary is kept as numbers rather than a
+    -- display string so it can be filtered and compared later.
+    location        TEXT,
+    remote          INTEGER NOT NULL DEFAULT 0,
+    salary_min      INTEGER,
+    salary_max      INTEGER,
+    salary_currency TEXT,
+    salary_period   TEXT,
     -- Who to reply to. Inbox sync knows the sender of every email it
     -- classifies and used to discard it, so "who is handling this?" was a
     -- question the tracker could not answer about its own applications.
     contact_name    TEXT,
     contact_email   TEXT,
+    -- Recruiters sign off with a direct line far more often than they are
+    -- reachable on the address a relay sent from, so the number is worth as
+    -- much as the address on an application that has gone quiet.
+    contact_phone   TEXT,
     last_contact_at TEXT,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
@@ -98,8 +118,15 @@ JOB_COLUMNS = [
     "notes",
     "source",
     "resume_used",
+    "location",
+    "remote",
+    "salary_min",
+    "salary_max",
+    "salary_currency",
+    "salary_period",
     "contact_name",
     "contact_email",
+    "contact_phone",
     "last_contact_at",
     "created_at",
     "updated_at",
@@ -202,6 +229,34 @@ def _migrate(conn: sqlite3.Connection, db_path) -> None:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT")
                 logger.info("Added jobs.%s to %s", column, db_path)
 
+    if current < 4:
+        # Same shape as the v3 step, and for the same reason: _SCHEMA declares
+        # the column but CREATE TABLE IF NOT EXISTS does nothing to a jobs table
+        # that already exists.
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
+
+        if "contact_phone" not in existing:
+            conn.execute("ALTER TABLE jobs ADD COLUMN contact_phone TEXT")
+            logger.info("Added jobs.contact_phone to %s", db_path)
+
+    if current < 5:
+        # SQLite allows ADD COLUMN ... NOT NULL only with a non-NULL default,
+        # which is why `remote` carries one. The rest are nullable: "no salary
+        # recorded" and "a salary of zero" are different facts.
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
+
+        for column, declaration in (
+            ("location", "TEXT"),
+            ("remote", "INTEGER NOT NULL DEFAULT 0"),
+            ("salary_min", "INTEGER"),
+            ("salary_max", "INTEGER"),
+            ("salary_currency", "TEXT"),
+            ("salary_period", "TEXT"),
+        ):
+            if column not in existing:
+                conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {declaration}")
+                logger.info("Added jobs.%s to %s", column, db_path)
+
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     logger.info(
         "Schema at v%s for %s (was v%s)", SCHEMA_VERSION, db_path, current
@@ -300,11 +355,19 @@ def add_job(
     resume_used: Optional[str] = None,
     *,
     db_path,
+    location: str = "",
+    remote: bool = False,
+    salary: Optional[dict] = None,
 ) -> int:
     """Insert a job application and return its id.
 
     Raises ``DuplicateJobError`` if this company+role is already tracked, and
     ``ValueError`` if required fields are blank or the status is unknown.
+
+    ``salary`` is :func:`posting.normalise_salary`'s dict — ``min``, ``max``,
+    ``currency``, ``period`` — passed whole rather than as four arguments,
+    because the four are only ever meaningful together. ``None`` records no
+    salary, which is different from a salary of zero.
     """
     company = (company or "").strip()
     role = (role or "").strip()
@@ -315,6 +378,7 @@ def add_job(
     status = _validate_status(status)
     date_applied = date_applied or _today()
     now = _utcnow()
+    salary = salary or posting.EMPTY_SALARY
 
     try:
         with connect(db_path) as conn:
@@ -322,8 +386,10 @@ def add_job(
                 """
                 INSERT INTO jobs (
                     company, role, jd, status, date_applied, link, notes,
-                    source, resume_used, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    source, resume_used, location, remote,
+                    salary_min, salary_max, salary_currency, salary_period,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     company,
@@ -335,6 +401,12 @@ def add_job(
                     notes,
                     source,
                     resume_used,
+                    posting.normalise_location(location),
+                    1 if remote else 0,
+                    salary.get("min"),
+                    salary.get("max"),
+                    salary.get("currency") or None,
+                    salary.get("period") or None,
                     now,
                     now,
                 ),
@@ -480,21 +552,49 @@ def _find_job_for_email(
     return None
 
 
-# Mailboxes that exist to send and not to receive. Storing one as the contact
-# is worse than storing nothing: it reads as somebody to reply to.
-_NOREPLY_LOCAL = re.compile(
-    r"^(no-?reply|do-?not-?reply|donotreply|notification|notifications|"
-    r"automated|auto|mailer|bounce|postmaster|noreply)",
-    re.IGNORECASE,
-)
+def compose_email_note(
+    category: str,
+    subject: str,
+    reasoning: str,
+    *,
+    sender: str = "",
+    contact_name: str = "",
+    contact_email: str = "",
+    contact_phone: str = "",
+    mentioned_emails: tuple[str, ...] = (),
+    next_step: str = "",
+    deadline: str = "",
+) -> str:
+    """The note one classified email leaves on an application.
 
+    Notes are the only durable record of what actually arrived, so everything
+    extracted goes here even when it is not promoted to a column. A shared
+    ``careers@`` address or a second recruiter on the Cc line is context worth
+    keeping and not somebody to phone, and the distinction is the point: columns
+    are for "who do I reply to", the note is for "what did this say".
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    lines = [f"[{timestamp} | {category}]", f"Subject: {subject}"]
 
-def is_replyable(address: str) -> bool:
-    """True when an address looks like a person rather than a send-only robot."""
-    address = (address or "").strip()
-    if "@" not in address:
-        return False
-    return not _NOREPLY_LOCAL.match(address.split("@", 1)[0])
+    if sender:
+        lines.append(f"From: {sender}")
+
+    contact_bits = [bit for bit in (contact_name, contact_email, contact_phone) if bit]
+    if contact_bits:
+        lines.append("Contact: " + " · ".join(contact_bits))
+
+    if mentioned_emails:
+        lines.append("Also mentioned: " + ", ".join(mentioned_emails[:5]))
+
+    if next_step:
+        lines.append(f"Next step: {next_step}")
+
+    if deadline:
+        lines.append(f"Deadline: {deadline}")
+
+    lines.append(f"AI Note: {reasoning}")
+
+    return "\n".join(lines)
 
 
 def update_job_from_email(
@@ -507,6 +607,13 @@ def update_job_from_email(
     role: str = "",
     contact_name: str = "",
     contact_email: str = "",
+    contact_phone: str = "",
+    sender: str = "",
+    mentioned_emails: tuple[str, ...] = (),
+    next_step: str = "",
+    deadline: str = "",
+    email_date: str = "",
+    link: str = "",
 ) -> str:
     """Apply an AI-classified email to the workspace.
 
@@ -514,10 +621,20 @@ def update_job_from_email(
     ``"noted"`` when the email was recorded but the status was left alone
     (a backwards move), or ``"created"`` when a new application was tracked.
 
-    The sender is recorded as the application's contact when it looks like a
-    person. ``last_contact_at`` moves either way — an automated "we received
-    your application" is still the employer making contact, and that is what
-    the follow-up view measures silence against.
+    ``email_date`` (``YYYY-MM-DD``) dates a row this email *creates*. It is the
+    earliest evidence the application exists, which beats the date the sync
+    happened to run — an inbox scanned today can be full of confirmations from
+    three weeks ago, and recording all of them as "applied today" makes the
+    follow-up clock start from the wrong end.
+
+    ``link`` is where to click through to. It comes from an email body, so it
+    has already been through ``posting.is_job_link``; see the allowlist there
+    for why nothing else is accepted.
+
+    The contact is recorded when it looks like a person — see ``contacts.py``
+    for how one is chosen. ``last_contact_at`` moves either way: an automated
+    "we received your application" is still the employer making contact, and
+    that is what the follow-up view measures silence against.
     """
     company_name = (company_name or "").strip()
     if not company_name:
@@ -526,19 +643,75 @@ def update_job_from_email(
     category = _validate_status(category)
     role = (role or "").strip()
 
-    # NULL rather than "" so COALESCE below keeps a human contact already on
-    # the record when a later no-reply message arrives about the same job.
     contact_email = (contact_email or "").strip()
+    contact_name = (contact_name or "").strip()
+    contact_phone = (contact_phone or "").strip()
+
+    # One rule, applied to the name and the number alike: details that arrive
+    # attached to an identified person overwrite what is on the record, and
+    # details from an unattributed message only fill a blank. NULL rather than
+    # "" throughout, so the COALESCE chains below can express that.
+    #
+    # Without the second tier, the display name off a later no-reply relay
+    # ("Acme Recruiting") would overwrite the human whose address is still
+    # stored, leaving a name and an address that belong to different people.
     if is_replyable(contact_email):
         new_contact_email = contact_email
-        new_contact_name = (contact_name or "").strip() or contact_email
+        named_contact = contact_name or contact_email
+        named_phone = contact_phone or None
+        loose_name = None
+        loose_phone = None
     else:
         new_contact_email = None
-        new_contact_name = None
+        named_contact = None
+        named_phone = None
+        # Still worth keeping while nobody better is known: "Priya in Acme
+        # Talent said X" beats an empty field on an application gone quiet, and
+        # an ATS relay carries no replyable address at all while still signing
+        # off with the recruiter's direct line.
+        loose_name = contact_name or None
+        loose_phone = contact_phone or None
 
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    note = f"[{timestamp} | {category}]\nSubject: {subject}\nAI Note: {reasoning}"
+    note = compose_email_note(
+        category,
+        subject,
+        reasoning,
+        sender=sender,
+        contact_name=named_contact or loose_name or "",
+        contact_email=new_contact_email or "",
+        contact_phone=named_phone or loose_phone or "",
+        mentioned_emails=tuple(mentioned_emails),
+        next_step=next_step,
+        deadline=deadline,
+    )
     now = _utcnow()
+
+    # Shared by every update path below, including the duplicate-row fallback,
+    # so an email applies its contact the same way however it finds its
+    # application. SQLite evaluates each SET expression against the pre-update
+    # row, so `contact_email IS NULL` reads as "nobody was known before this
+    # email" — which is precisely the condition the loose tier wants.
+    contact_update = (
+        "contact_name = COALESCE(?, "
+        "CASE WHEN contact_email IS NULL THEN ? END, contact_name), "
+        "contact_email = COALESCE(?, contact_email), "
+        "contact_phone = COALESCE(?, "
+        "CASE WHEN contact_email IS NULL THEN ? END, contact_phone), "
+        # Fills a blank only. A row saved from the posting already has the real
+        # URL; a link out of an email is the fallback for rows the tracker only
+        # ever learned about by mail, and must never displace the better one.
+        "link = CASE WHEN COALESCE(link, '') = '' THEN ? ELSE link END, "
+        "last_contact_at = ?"
+    )
+    contact_values = (
+        named_contact,
+        loose_name,
+        new_contact_email,
+        named_phone,
+        loose_phone,
+        link if posting.is_job_link(link) else "",
+        now,
+    )
 
     with connect(db_path) as conn:
         row = _find_job_for_email(conn, company_name, role)
@@ -548,13 +721,6 @@ def update_job_from_email(
             combined = f"{existing}\n\n{note}".strip()
             previous = row["status"]
             moves_forward = advances(previous, category)
-
-            contact_update = (
-                "contact_name = COALESCE(?, contact_name), "
-                "contact_email = COALESCE(?, contact_email), "
-                "last_contact_at = ?"
-            )
-            contact_values = (new_contact_name, new_contact_email, now)
 
             if moves_forward and previous != category:
                 conn.execute(
@@ -596,20 +762,23 @@ def update_job_from_email(
             cursor = conn.execute(
                 """
                 INSERT INTO jobs (
-                    company, role, status, date_applied, notes, source,
-                    contact_name, contact_email, last_contact_at,
+                    company, role, status, date_applied, link, notes, source,
+                    contact_name, contact_email, contact_phone, last_contact_at,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     company_name,
                     role or "Unknown Role",
                     category,
-                    _today(),
+                    email_date or _today(),
+                    link if posting.is_job_link(link) else "",
                     note,
                     "Email Sync",
-                    new_contact_name,
+                    # A brand-new row has nobody on it, so both tiers apply.
+                    named_contact or loose_name,
                     new_contact_email,
+                    named_phone or loose_phone,
                     now,
                     now,
                     now,
@@ -628,16 +797,12 @@ def update_job_from_email(
             ).fetchone()
 
             conn.execute(
-                "UPDATE jobs SET notes = ?, updated_at = ?, "
-                "contact_name = COALESCE(?, contact_name), "
-                "contact_email = COALESCE(?, contact_email), "
-                "last_contact_at = ? WHERE id = ?",
+                f"UPDATE jobs SET notes = ?, updated_at = ?, {contact_update} "
+                "WHERE id = ?",
                 (
                     f"{existing_row['notes'] or ''}\n\n{note}".strip(),
                     now,
-                    new_contact_name,
-                    new_contact_email,
-                    now,
+                    *contact_values,
                     existing_row["id"],
                 ),
             )
@@ -720,7 +885,7 @@ def get_followups(*, db_path, quiet_after_days: int = 10) -> list[dict]:
         rows = conn.execute(
             f"""
             SELECT j.id, j.company, j.role, j.status, j.link,
-                   j.date_applied, j.contact_name, j.contact_email,
+                   j.date_applied, j.contact_name, j.contact_email, j.contact_phone,
                    MAX(
                        COALESCE(j.last_contact_at, ''),
                        COALESCE((SELECT MAX(h.occurred_at) FROM status_history h

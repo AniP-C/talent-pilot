@@ -62,6 +62,15 @@ def inject_styles() -> None:
     st.markdown(STYLES, unsafe_allow_html=True)
 
 
+# What an empty cell says out loud.
+#
+# A blank cell cannot be told apart from a broken one: "this posting did not
+# state a salary" and "the salary never got captured" look identical, and the
+# second is the one worth investigating. The stored column stays NULL either way,
+# so this is a display decision only and nothing downstream has to know about it.
+NOT_STATED = "NA"
+
+
 def status_label(status: str) -> str:
     """Human-friendly label with a colour dot for a status code."""
     return STATUS_LABELS.get(status, status)
@@ -80,6 +89,37 @@ def render_metrics(stats: dict) -> None:
 
     for column, (label, value) in zip(columns, cells):
         column.metric(label, value)
+
+
+def contact_line(job: dict) -> str:
+    """One markdown line naming who to reply to, or "" when nobody is known.
+
+    Shared by the follow-up list and the application editor so the same
+    application never describes its contact two different ways. The address is
+    a ``mailto:`` and the number a ``tel:`` — the point of capturing them is
+    that replying is one click, not one copy-paste.
+    """
+    name = (job.get("contact_name") or "").strip()
+    email = (job.get("contact_email") or "").strip()
+    phone = (job.get("contact_phone") or "").strip()
+
+    if not (name or email or phone):
+        return ""
+
+    parts = []
+
+    if email:
+        parts.append(f"[{name or email}](mailto:{email})")
+    elif name:
+        # A name with no address still answers "who is handling this?".
+        parts.append(f"**{name}**")
+
+    if phone:
+        # Spaces and brackets are for reading; the dial string is digits.
+        dialable = "".join(ch for ch in phone if ch.isdigit() or ch == "+")
+        parts.append(f"[{phone}](tel:{dialable})")
+
+    return "↩️ " + " · ".join(parts)
 
 
 def account_chip(email: str) -> None:

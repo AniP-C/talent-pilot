@@ -2,15 +2,38 @@
 
 import time
 import uuid
-from email.utils import parseaddr
+from datetime import datetime
 from typing import Callable, Optional
 
+import contacts
 import db
+import posting
 import utils
 import workspace
 from ai.email_classifier import MIN_CONFIDENCE, classify_email, resolve_company, to_status
 from config import GMAIL_THROTTLE_SECONDS, sync_logger as logger
-from integrations.gmail_client import fetch_job_emails
+from integrations.gmail_client import fetch_job_emails, mailbox_address
+
+
+def _email_date(email: dict) -> str:
+    """The day an email arrived, as ``YYYY-MM-DD``, or "" if Gmail said nothing.
+
+    Gmail's ``internalDate`` is epoch milliseconds. Converted in local time
+    because every other date the tracker stores is a local calendar date, and a
+    UTC one would show as the previous day for anyone east of Greenwich for
+    several hours a night.
+    """
+    stamp = email.get("internal_date") or 0
+
+    # Zero is "Gmail told us nothing", not 1 January 1970 — and a row dated 1970
+    # would sit at the top of the follow-up list forever.
+    if not stamp:
+        return ""
+
+    try:
+        return datetime.fromtimestamp(int(stamp) / 1000).strftime("%Y-%m-%d")
+    except (OSError, OverflowError, ValueError):
+        return ""
 
 
 def sync_inbox_to_db(
@@ -59,6 +82,10 @@ def sync_inbox_to_db(
         "skipped": 0,
         "failed": 0,
         "needs_review": 0,
+        # How many applications came away with somebody to reply to. Worth
+        # counting separately: a sync that changed no statuses can still have
+        # been the run that found the recruiter.
+        "contacts": 0,
         "run_id": run_id,
     }
 
@@ -87,6 +114,11 @@ def sync_inbox_to_db(
 
     report(f"Classifying {len(pending)} new emails…")
 
+    # Read once per run, not once per email. Needed so the user's own address
+    # never becomes the recruiter contact — it is in To, in Cc, and quoted in
+    # the body of nearly every application confirmation.
+    own_address = mailbox_address(user_id)
+
     for index, email in enumerate(pending):
         # Throttle *between* calls, not after the last one, so a single-email
         # sync does not sit idle at the end.
@@ -100,6 +132,7 @@ def sync_inbox_to_db(
             subject=email["subject"],
             snippet=email["snippet"],
             body=email.get("body", ""),
+            reply_to=email.get("reply_to", ""),
         )
 
         if "error" in result:
@@ -113,7 +146,7 @@ def sync_inbox_to_db(
             continue
 
         status = to_status(result.get("category", ""))
-        company = resolve_company(result, email["sender"])
+        company = resolve_company(result, email["sender"], email.get("reply_to", ""))
         role = (result.get("role_title") or "").strip()
         confidence = float(result.get("confidence", 1.0) or 0.0)
 
@@ -146,10 +179,22 @@ def sync_inbox_to_db(
             summary["skipped"] += 1
             continue
 
-        # The From header is 'Jane Doe <jane@acme.com>' or a bare address.
-        # parseaddr handles both, plus the quoted display names that would
-        # otherwise need unpicking by hand.
-        contact_name, contact_email = parseaddr(email["sender"])
+        # Who to reply to. The From header used to be the only source, which
+        # meant an ATS relay ("no-reply@greenhouse.io") left the application
+        # with no contact at all even when the mail set a Reply-To and signed
+        # off with a direct line. See contacts.py for the ordering.
+        body = f"{email.get('snippet', '')}\n{email.get('body', '')}"
+
+        contact = contacts.choose_contact(
+            sender=email["sender"],
+            reply_to=email.get("reply_to", ""),
+            body=body,
+            suggested_name=result.get("recruiter_name", ""),
+            suggested_email=result.get("recruiter_email", ""),
+            suggested_phone=result.get("recruiter_phone", ""),
+            # Never record the user as their own recruiter.
+            exclude=(own_address,),
+        )
 
         try:
             outcome = db.update_job_from_email(
@@ -158,18 +203,48 @@ def sync_inbox_to_db(
                 subject=email["subject"],
                 reasoning=result.get("reasoning", ""),
                 role=role,
-                contact_name=contact_name,
-                contact_email=contact_email,
+                contact_name=contact["name"],
+                contact_email=contact["email"],
+                contact_phone=contact["phone"],
+                sender=email["sender"],
+                mentioned_emails=tuple(contact["mentioned"]),
+                next_step=result.get("next_step", ""),
+                deadline=result.get("deadline", ""),
+                # The date the email arrived, not the date the sync ran. An
+                # inbox scanned today is full of confirmations from weeks ago,
+                # and dating them all "today" starts the follow-up clock at the
+                # wrong end for every one of them.
+                email_date=_email_date(email),
+                # Somewhere to click through to, for an application the tracker
+                # only ever learned about by mail. Allowlisted to job boards and
+                # ATS vendors — see posting.JOB_LINK_HOSTS for why.
+                link=posting.find_job_link(body),
                 db_path=db_path,
             )
             db.mark_email_processed(email["id"], db_path=db_path)
             summary[outcome] += 1
+
+            if contact["email"] or contact["phone"]:
+                summary["contacts"] += 1
 
             decision(
                 "%-7s %s | %s / %s -> %s (confidence %.2f)",
                 outcome.upper(), email["id"], company, role or "Unknown Role",
                 status, confidence,
             )
+
+            # Logged separately, and only when something was found. The choice
+            # between a Reply-To, a From and a signature block is the part of
+            # this that is worth being able to audit later.
+            if contact["email"] or contact["phone"]:
+                decision(
+                    "CONTACT %s | %s <%s> %s | via %s",
+                    email["id"],
+                    contact["name"] or "unnamed",
+                    contact["email"] or "no address",
+                    contact["phone"] or "",
+                    contact["source"] or "signature",
+                )
         except Exception as exc:  # noqa: BLE001 - one bad email must not stop the run
             logger.error(
                 "[sync %s] Could not record email %s (%s / %s): %s",
@@ -181,7 +256,7 @@ def sync_inbox_to_db(
     report(
         f"Sync complete: {summary['updated']} updated, {summary['created']} created, "
         f"{summary['noted']} noted, {summary['skipped']} skipped, "
-        f"{summary['failed']} failed."
+        f"{summary['failed']} failed, {summary['contacts']} with a contact."
     )
     logger.info(
         "[sync %s] Finished for user %s: %s", run_id, user_id, summary

@@ -1,10 +1,36 @@
 """Email filtering and category mapping — the pure logic, no network calls."""
 
+from datetime import datetime
+
 import pytest
 
 from ai.email_classifier import to_status
 from config import VALID_STATUSES
 from integrations.gmail_client import is_high_probability_job_email
+from sync_controller import _email_date
+
+
+# =====================================================================
+# THE DATE AN EMAIL ARRIVED
+# =====================================================================
+# What a row created from an email is dated by. Not the day the sync ran: an
+# inbox scanned today is full of confirmations from weeks ago.
+def test_gmails_epoch_milliseconds_become_a_calendar_date():
+    # Built from a local datetime so the assertion holds in any timezone.
+    stamp = int(datetime(2026, 8, 15, 12, 0).timestamp() * 1000)
+
+    assert _email_date({"internal_date": stamp}) == "2026-08-15"
+
+
+def test_a_missing_date_is_empty_not_nineteen_seventy():
+    """`or 0` made this the epoch, and a row dated 1970 would sit at the top of
+    the follow-up list forever."""
+    assert _email_date({}) == ""
+    assert _email_date({"internal_date": 0}) == ""
+
+
+def test_a_nonsense_date_is_empty():
+    assert _email_date({"internal_date": "not a number"}) == ""
 
 
 # =====================================================================
