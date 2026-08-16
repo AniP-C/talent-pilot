@@ -102,11 +102,37 @@ to their own account.
 
 | Permission | Justification |
 | ---------- | ------------- |
-| `activeTab` | Reads the job posting on the page the user is viewing, only when the user opens the extension popup. |
-| `storage` | Stores the user's sign-in token, their chosen resume profile, and a short-lived prompt to save an application they just submitted. |
+| `activeTab` | Reads the job posting on the page the user is viewing, so the extension can show the match score and save the job to the user's tracker. |
+| `storage` | Stores the user's sign-in token, their chosen resume profile, whether the match card is switched on, and a short-lived prompt to save an application they just submitted. |
 | `scripting` | Runs the page reader on sites the user has explicitly enabled from the popup. |
 | Host permissions | Communicates with the user's own Talent Pilot account server to load their resume profiles and saved answers, and to save applications. |
 | `optional_host_permissions` | Requested one site at a time, only when the user clicks "Enable Copilot on this site", so the extension never has access to sites the user has not chosen. |
+
+## Data use disclosures
+
+Fill these in on the dashboard's **Privacy practices** tab. They must match what
+the extension actually does — a justification that describes an older version is
+the kind of mismatch that gets an approved item taken down later, which is worse
+than a rejection now.
+
+**"Website content" — yes, this item collects it.** Since 2.3.0 the extension
+reads the job description of a supported job posting **automatically on page
+load**, while signed in, and sends it to the user's own Talent Pilot server to be
+scored against their resume. Earlier versions only did this on a click, and the
+old wording said so.
+
+What keeps that defensible, and what to say:
+
+- It is sent to the **user's own account server**, never to a third party.
+- It is **not stored** unless the user goes on to save that job.
+- Nothing is read while signed out, and the whole feature has an off switch in
+  the extension's Settings panel.
+- The automatic scan is plain text matching on that server — no AI, nothing sent
+  to Google. A description only reaches Gemini when the user clicks for the full
+  analysis.
+
+Do **not** claim the extension only reads a page when the popup is opened. It no
+longer does.
 
 ## Before resubmitting
 
@@ -114,3 +140,11 @@ to their own account.
 - [ ] Screenshots show the extension's own UI, not another company's branding
 - [ ] Privacy policy URL resolves: <https://katchjobs.online/privacy>
 - [ ] `manifest.json` description matches the tone here (it is already compliant)
+- [ ] The privacy policy describes the **current** version. 2.3.0 made the page
+      read automatic; the policy said "when you click Save" until it was updated
+      to match. Re-read it against the diff on every release that changes when
+      data leaves the page — the store checks this, and so should you.
+- [ ] Data use disclosures match the permission justifications above
+- [ ] The deployed policy is the updated one — it is served by the API from
+      `static/privacy.html`, so it ships with a **server** deploy, not with the
+      extension package. Confirm at the URL before submitting.

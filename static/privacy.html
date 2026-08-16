@@ -46,7 +46,7 @@
 
 <h1>Privacy Policy</h1>
 <p class="lede">Talent Pilot — job application tracker and browser extension</p>
-<p class="updated">Last updated: 8 August 2026</p>
+<p class="updated">Last updated: 17 August 2026</p>
 
 <p>
   Talent Pilot is a personal job-application tracker. It consists of a website at
@@ -90,9 +90,20 @@
           these is optional; leave any blank and it is simply never suggested.</td>
     </tr>
     <tr>
-      <td>Job postings you save — company, role, job description, and the page URL</td>
+      <td>Job postings you save — company, role, job description, the page URL, and
+          the location and salary the posting states</td>
       <td>The job page, when you click Save</td>
       <td>To build your application tracker.</td>
+    </tr>
+    <tr>
+      <td>The text of a job description you are <em>looking at</em></td>
+      <td>The job page, automatically, when you open a job posting on a supported
+          site while signed in — <strong>without</strong> waiting for a click</td>
+      <td>To show a match score against your resume on the posting itself. The
+          description is compared to your resume and the score returned; it is
+          <strong>not stored</strong> unless you go on to save the job. You can
+          turn this off in the extension's Settings panel, and no page is read
+          while you are signed out.</td>
     </tr>
     <tr>
       <td>Gmail message metadata and body text — sender, subject, and content of
@@ -180,6 +191,13 @@
   <a href="https://ai.google.dev/gemini-api/terms">Gemini API Additional Terms of
   Service</a>. Talent Pilot sends only what is needed for each task and never
   transmits your password.
+</p>
+
+<p>
+  The match score shown automatically on a job posting is <strong>not</strong> one
+  of those four. It is plain text matching performed on Talent Pilot's own server,
+  with no AI involved and nothing sent to Google. A job description only reaches
+  Google when you ask for the full analysis by clicking a button.
 </p>
 
 <h2>Where your data is stored</h2>
