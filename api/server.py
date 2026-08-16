@@ -34,6 +34,8 @@ import auth
 import autofill
 import db
 import job_fields
+import posting
+import scoring
 import utils
 import workspace
 from ai.resume_parser import (
@@ -213,10 +215,33 @@ class JobData(BaseModel):
     link: str = Field(default="", max_length=2000)
     profile: Optional[str] = Field(default=None, max_length=255)
 
+    # Read from the posting's JSON-LD block by the extension. Deliberately
+    # unconstrained beyond their types: a posting with an odd salary should save
+    # without the salary, not fail to save. `posting.normalise_salary` drops
+    # anything unusable, which is the difference between a 422 the user cannot
+    # act on and a field they can fill in themselves.
+    location: str = Field(default="", max_length=500)
+    remote: bool = False
+    salary_min: Optional[float] = None
+    salary_max: Optional[float] = None
+    salary_currency: str = Field(default="", max_length=20)
+    salary_period: str = Field(default="", max_length=20)
+
 
 class CheckJobRequest(BaseModel):
     company: str = Field(min_length=1, max_length=200)
     role: str = Field(min_length=1, max_length=200)
+
+
+class KeywordScanRequest(BaseModel):
+    """A keyword-only scan. No company or role, because none is needed.
+
+    This is what the in-page card runs on arrival, so it deliberately asks for
+    the minimum: a description and which resume to compare it against.
+    """
+
+    jd_text: str = Field(default="", max_length=50_000)
+    profile: Optional[str] = Field(default=None, max_length=255)
 
 
 class AnswerRequest(BaseModel):
@@ -531,6 +556,16 @@ def save_job(job: JobData, user: auth.User = Depends(current_user)) -> dict:
         )
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    # The client is not trusted with these either, but they fail softly: an
+    # unusable salary is dropped so the application still saves.
+    salary = posting.normalise_salary(
+        job.salary_min, job.salary_max, job.salary_currency, job.salary_period
+    )
+    location = posting.normalise_location(job.location)
+    # A posting whose only stated location is "Remote" hands that to the flag
+    # rather than the place, so the two never disagree.
+    remote = job.remote or posting.looks_remote(job.location)
+
     try:
         job_id = db.add_job(
             company=company,
@@ -541,6 +576,9 @@ def save_job(job: JobData, user: auth.User = Depends(current_user)) -> dict:
             notes="Added via browser extension",
             source="Web Extension",
             resume_used=_validated_profile(user.id, job.profile),
+            location=location,
+            remote=remote,
+            salary=salary,
             db_path=db_path,
         )
     except db.DuplicateJobError as exc:
@@ -569,6 +607,26 @@ def update_job_status(
         raise HTTPException(status_code=404, detail="Job not found.")
 
     return {"message": "Status updated."}
+
+
+# =====================================================================
+# SCORING
+# =====================================================================
+@app.post("/keyword-scan")
+def keyword_scan(req: KeywordScanRequest, user: auth.User = Depends(current_user)) -> dict:
+    """Which terms the posting names that the resume does not contain.
+
+    No model call, no network, and the same answer every time — it is pure
+    string matching over a curated vocabulary (see ``scoring.py``). That is
+    exactly why the extension can run it on arrival at every job page: the
+    number costs nothing, so it can be shown before the user asks for it, and
+    the expensive requirement-by-requirement analysis stays behind a click.
+
+    Same division of labour as the inbox filter: the cheap pass runs first and
+    for free, and the paid one only when it has earned the call.
+    """
+    resume = utils.load_profile(user.id, _validated_profile(user.id, req.profile))
+    return scoring.keyword_coverage(req.jd_text, json.dumps(resume))
 
 
 # =====================================================================

@@ -45,6 +45,8 @@ async function setSession(token, email) {
     // an expired session would serve the previous account's saved answers
     // until the cache happened to age out.
     autofillCache = { rules: false, data: null, at: 0 };
+    // Scores are per-resume, so one account's must never be shown to the next.
+    keywordCache.clear();
     // Job pages opened before signing in are holding an empty rule set.
     await broadcastAutofillChanged();
 }
@@ -54,6 +56,7 @@ async function clearSession() {
     // One account's saved answers must never be served to the next person to
     // sign in on this browser.
     autofillCache = { rules: false, data: null, at: 0 };
+    keywordCache.clear();
     // Signing out has to take the suggestions off open pages too, or the
     // previous account's answers stay one click from being filled in.
     await broadcastAutofillChanged();
@@ -159,6 +162,17 @@ async function broadcastAutofillChanged() {
 // change rarely. Without this, opening ten job tabs is ten identical requests.
 const AUTOFILL_TTL_MS = 5 * 60 * 1000;
 let autofillCache = { rules: false, data: null, at: 0 };
+
+// ---------------------------------------------------------------------------
+// Keyword scan cache
+// ---------------------------------------------------------------------------
+// The in-page card scans on arrival rather than on a click, so the same posting
+// is asked about every time a job board re-renders it — which on LinkedIn is
+// several times per navigation. Keyed by description, since that is what the
+// answer actually depends on.
+const KEYWORD_TTL_MS = 10 * 60 * 1000;
+const KEYWORD_CACHE_MAX = 30;
+const keywordCache = new Map();
 
 // ---------------------------------------------------------------------------
 // HTTP
@@ -406,6 +420,35 @@ const handlers = {
 
     ANALYZE_JOB({ job }) {
         return apiRequest("/analyze-job", { method: "POST", body: job });
+    },
+
+    // The keyword-only score behind the in-page card. Cached per description
+    // because a job board re-renders the same posting several times on the way
+    // to settling — a MutationObserver-driven card would otherwise ask for the
+    // same number on every one of them.
+    async KEYWORD_SCAN({ jd_text, profile }) {
+        const key = `${profile || "default"}::${jd_text.length}::${jd_text.slice(0, 200)}`;
+        const cached = keywordCache.get(key);
+
+        if (cached && Date.now() - cached.at < KEYWORD_TTL_MS) {
+            return { ok: true, data: cached.data };
+        }
+
+        const response = await apiRequest("/keyword-scan", {
+            method: "POST",
+            body: { jd_text, profile }
+        });
+
+        if (response.ok) {
+            // Bounded, oldest first: a long browsing session opens a lot of
+            // postings and none of them are worth remembering forever.
+            if (keywordCache.size >= KEYWORD_CACHE_MAX) {
+                keywordCache.delete(keywordCache.keys().next().value);
+            }
+            keywordCache.set(key, { data: response.data, at: Date.now() });
+        }
+
+        return response;
     },
 
     GENERATE_ANSWER({ payload }) {

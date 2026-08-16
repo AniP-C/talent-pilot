@@ -367,12 +367,18 @@
             if (outer && (outer.company || outer.jd_text)) {
                 // Prefer whichever source actually has a description; the outer
                 // page usually does and the form iframe usually does not.
+                //
+                // The posting's facts come from the outer frame wholesale rather
+                // than field by field: an embedded application form declares no
+                // JSON-LD, so a location or salary seen in here is either the
+                // outer page's or nothing at all.
                 return {
                     company: outer.company || here.company,
                     role: outer.role || here.role,
                     jd_text: outer.jd_text.length >= here.jd_text.length
                         ? outer.jd_text
                         : here.jd_text,
+                    ...postingFieldsOf(outer.location ? outer : here),
                 };
             }
         } catch {
@@ -540,6 +546,44 @@
         "job application", "hiring", "we are hiring", "home"
     ]);
 
+    // A job board is never the employer.
+    //
+    // og:site_name is the board naming *itself*, which is how the Indeed home
+    // page — not a posting at all — was saved as an application at a company
+    // called "Indeed". Mirrors ATS_DOMAINS and _OPAQUE_HOSTS in job_fields.py,
+    // which rejects the same names server-side.
+    //
+    // Ambiguous single words a real employer might use — Shine, Dice, Monster,
+    // Seek — are deliberately left out. Rejecting a genuine company is the worse
+    // error, and the cost of letting a board name through here is one row the
+    // user can correct, while the cost of rejecting one is an application that
+    // cannot be saved at all.
+    const JOB_BOARDS = new Set([
+        "linkedin", "indeed", "naukri", "glassdoor", "ziprecruiter",
+        "wellfound", "angellist", "instahyre", "cutshort", "hirist",
+        "simplyhired", "careerbuilder", "internshala", "timesjobs",
+        "greenhouse", "lever", "workday", "smartrecruiters", "icims", "taleo",
+        "bamboohr", "ashby", "workable", "jobvite", "breezy", "recruitee",
+        "teamtailor", "successfactors", "hackerrank"
+    ]);
+
+    // A company name is a name, not a sentence. Wellfound renders its listing
+    // blurb inside a container the company selector matched, so the employer
+    // came back as 20 words of marketing copy — "Talkdoc Actively Hiring
+    // PROMOTED Affordable and Accessible Mental Healthcare from People Who…".
+    // Real employers are short: "Saint-Gobain India Private Limited" is four.
+    const MAX_COMPANY_WORDS = 8;
+
+    function isJobBoard(value) {
+        const key = clean(value)
+            .toLowerCase()
+            .replace(/\.(com|in|io|net|org|hr|co(\.[a-z]{2})?)\b/g, "")
+            .replace(/\b(jobs?|careers?|india|inc|ltd|limited)\b/g, "")
+            .replace(/[^a-z]/g, "");
+
+        return JOB_BOARDS.has(key);
+    }
+
     // True when a string reads as a job title rather than an employer.
     // Conservative on purpose: rejecting a real company is worse than letting
     // an odd one through, so a corporate suffix or any word that is neither a
@@ -561,10 +605,17 @@
     }
 
     // Accept a candidate company only if it is informative and is not the role.
+    //
+    // Every rejection here ends the same way: the popup asks the user to type
+    // the employer. That is the point — an unanswered question is recoverable,
+    // and a wrong company is a corrupt row that only surfaces weeks later as a
+    // duplicate the emails cannot match.
     function acceptCompany(candidate, role) {
         const cleaned = clean(candidate);
         if (!cleaned || cleaned.length > 200) return "";
         if (isPlaceholder(cleaned)) return "";
+        if (isJobBoard(cleaned)) return "";
+        if (cleaned.split(/\s+/).length > MAX_COMPANY_WORDS) return "";
         if (role && cleaned.toLowerCase() === clean(role).toLowerCase()) return "";
         if (looksLikeRole(cleaned)) return "";
         return cleaned;
@@ -574,8 +625,24 @@
     // Greenhouse, Lever, Ashby, Workable and most ATS-hosted career pages all
     // emit this. hiringOrganization.name is declared data rather than a
     // guess, which makes it immune to markup and title-format churn.
+    //
+    // The same block declares the salary and the location, which were being
+    // parsed past and discarded. Reading them here rather than out of the
+    // description prose is the entire reason they are trustworthy enough to
+    // store: `baseSalary.value.minValue` is a stated number, whereas "competitive
+    // package, £70k OTE" in a paragraph is a guess waiting to be wrong.
     function fromJsonLd() {
-        const found = { company: "", role: "", jd_text: "" };
+        const found = {
+            company: "",
+            role: "",
+            jd_text: "",
+            location: "",
+            remote: false,
+            salary_min: null,
+            salary_max: null,
+            salary_currency: "",
+            salary_period: ""
+        };
 
         for (const node of document.querySelectorAll('script[type="application/ld+json"]')) {
             let parsed;
@@ -606,11 +673,108 @@
                     found.jd_text = clean(holder.textContent || "");
                 }
 
+                Object.assign(found, salaryFromPosting(entry), locationFromPosting(entry));
+
                 if (found.company || found.role) return found;
             }
         }
 
         return found;
+    }
+
+    // baseSalary is a MonetaryAmount whose `value` is either a QuantitativeValue
+    // with min/max, or a bare number for a single figure. estimatedSalary is the
+    // same shape and is what boards emit when the employer stated no range —
+    // taken only as a fallback, because an estimate and a stated salary are not
+    // the same claim.
+    function salaryFromPosting(entry) {
+        const amount = entry.baseSalary || entry.estimatedSalary;
+        if (!amount) return {};
+
+        const money = [].concat(amount)[0];
+        if (!money) return {};
+
+        const value = money.value ?? money;
+        const scalar = typeof value === "object" ? value : { value };
+
+        return {
+            salary_min: firstNumber(scalar.minValue, scalar.value),
+            salary_max: firstNumber(scalar.maxValue, scalar.value),
+            // salaryCurrency is the older top-level spelling and still common.
+            salary_currency: clean(
+                money.currency || entry.salaryCurrency || scalar.currency || ""
+            ).slice(0, 20),
+            salary_period: clean(
+                scalar.unitText || money.unitText || scalar.unitCode || ""
+            ).slice(0, 20)
+        };
+    }
+
+    // Anything that is not a usable number is left for the server to drop, but
+    // there is no point sending a string that plainly is not one.
+    function firstNumber(...values) {
+        for (const value of values) {
+            const number = typeof value === "string"
+                ? Number(value.replace(/[,\s]/g, ""))
+                : value;
+            if (typeof number === "number" && isFinite(number) && number > 0) {
+                return number;
+            }
+        }
+        return null;
+    }
+
+    // jobLocation is a Place, or an array of them for a role open in several
+    // offices. The country is included only when nothing more specific exists:
+    // "Bengaluru, Karnataka" is a location, "Bengaluru, Karnataka, IN" is a
+    // postal address.
+    function locationFromPosting(entry) {
+        const places = [].concat(entry.jobLocation || []).filter(Boolean);
+        const named = places.map(placeToText).filter(Boolean);
+
+        // TELECOMMUTE is the declared form. It can arrive as an array when a
+        // role is remote *and* tied to an office.
+        const remote = []
+            .concat(entry.jobLocationType || [])
+            .some((type) => /telecommute/i.test(String(type)));
+
+        let location = named[0] || "";
+
+        // A role open in five offices is worth recording as such; listing all
+        // five is not, at the width this is displayed.
+        if (named.length > 1) location += ` +${named.length - 1} more`;
+
+        // For a fully remote role the only stated place is often the region a
+        // candidate must be able to work in.
+        if (!location && remote) {
+            location = [].concat(entry.applicantLocationRequirements || [])
+                .map((req) => clean(typeof req === "string" ? req : req?.name || ""))
+                .filter(Boolean)[0] || "";
+        }
+
+        return { location: location.slice(0, 200), remote };
+    }
+
+    function placeToText(place) {
+        if (typeof place === "string") return clean(place);
+
+        const address = place.address;
+        if (typeof address === "string") return clean(address);
+        if (!address) return clean(place.name || "");
+
+        const locality = clean(address.addressLocality || "");
+        const region = clean(address.addressRegion || "");
+        const country = clean(
+            typeof address.addressCountry === "string"
+                ? address.addressCountry
+                : address.addressCountry?.name || ""
+        );
+
+        // Region is dropped when it merely repeats the city, which city-states
+        // and single-city regions do constantly.
+        const parts = [locality, region === locality ? "" : region].filter(Boolean);
+
+        return parts.length ? parts.join(", ") : country;
     }
 
     // --- Source 2: Open Graph ------------------------------------------------
@@ -627,12 +791,17 @@
     // `titleCompany` receives document.title and returns the company part.
     // Each is written against that board's actual title format instead of
     // assuming a shared one.
+    //
+    // `location` is a fallback only: the JSON-LD block is preferred wherever it
+    // exists, and these selectors cover the boards that render a location but
+    // declare nothing — LinkedIn above all, which emits no JobPosting block.
     const ADAPTERS = [
         {
             match: /linkedin\.com$/,
             company: ".job-details-jobs-unified-top-card__company-name, .topcard__org-name-link, .pr2.t-14",
             role: ".job-details-jobs-unified-top-card__job-title, .topcard__title, h1",
             jd: ".jobs-description__content, #job-details, .description__text",
+            location: ".job-details-jobs-unified-top-card__primary-description-container .tvm__text, .topcard__flavor--bullet",
             // "Role | Company | LinkedIn"
             titleCompany: (t) => t.split("|")[1] || ""
         },
@@ -641,6 +810,7 @@
             company: '.company-name, [class*="companyName"], header img[alt]',
             role: ".app-title, .job__title h1, h1",
             jd: "#content, .job__description, #main, .accessible-wrapper",
+            location: '.location, [class*="location"]',
             // "Job Application for <Role> at <Company>"
             titleCompany: (t) => t.split(/\bat\s+/i).slice(1).join(" at ") || ""
         },
@@ -649,6 +819,7 @@
             company: '.main-header-logo img[alt], [class*="companyName"]',
             role: ".posting-headline h2, h2",
             jd: ".posting-details, .section-wrapper, main",
+            location: '.posting-categories .location, .sort-by-location',
             // "Company - Role"  (company first on Lever)
             titleCompany: (t) => t.split(" - ")[0] || ""
         },
@@ -657,6 +828,7 @@
             company: '[class*="companyName"], header img[alt]',
             role: 'h1, [class*="jobTitle"]',
             jd: '[class*="descriptionText"], main',
+            location: '[class*="location"]',
             // "Role @ Company", and "Role - Company" on some boards: the
             // company is the LAST segment, never the first.
             titleCompany: (t) => t.split(/\s+[@|]\s+|\s+-\s+/).slice(1).pop() || ""
@@ -666,16 +838,36 @@
             company: '[data-ui="company-name"], [class*="companyName"], header img[alt]',
             role: '[data-ui="job-title"], h1',
             jd: '[data-ui="job-description"], main',
+            location: '[data-ui="job-location"], [class*="location"]',
             // "Role - Company"  (company LAST, the original bug)
             titleCompany: (t) => t.split(" - ").slice(1).join(" - ") || ""
         },
         {
             match: /(wellfound\.com|angel\.co)$/,
-            company: '[class*="company"] h1, a[href^="/company/"]',
-            role: 'h2, [class*="jobTitle"]',
-            jd: null,
+            // Precise first, and it now actually wins — see eachSelector. The
+            // company link is the only element on a Wellfound listing that is
+            // certain to be the employer and nothing else; `[class*="company"]`
+            // matches the card wrapping the whole promo blurb.
+            company: 'a[href^="/company/"], [class*="companyName"], [data-test*="company"] a',
+            role: '[class*="jobTitle"], h1, h2',
+            jd: '[class*="jobDescription"], [class*="description"]',
+            location: '[class*="location"]',
             // "Role at Company"
             titleCompany: (t) => t.split(/\s+at\s+/i).slice(1).join(" at ") || ""
+        },
+        {
+            // Indeed emits no JSON-LD JobPosting on most locales, and its search
+            // results page renders a posting in a side panel — so the "page" is
+            // not a posting at all. With none of these selectors present the
+            // company falls through to og:site_name, which says "Indeed" and is
+            // now rejected as a job board, leaving the popup to ask.
+            match: /indeed\.(com|co\.[a-z]{2}|[a-z]{2})$/,
+            company: '[data-testid="inlineHeader-companyName"], [data-company-name="true"], .jobsearch-CompanyInfoContainer a',
+            role: '[data-testid="jobsearch-JobInfoHeader-title"], .jobsearch-JobInfoHeader-title, h1',
+            jd: "#jobDescriptionText, .jobsearch-JobComponent-description",
+            location: '[data-testid="inlineHeader-companyLocation"], [data-testid="job-location"], .jobsearch-JobInfoHeader-subtitle div:last-child',
+            // "Role - Company - Job in City - Indeed.com"
+            titleCompany: (t) => t.split(" - ")[1] || ""
         }
     ];
 
@@ -686,6 +878,7 @@
         company: 'meta[property="og:site_name"], [class*="company-name"]',
         role: "h1",
         jd: null,
+        location: null,
         titleCompany: (t) => {
             const parts = t.split(/\s+[|–—]\s+|\s+-\s+/).map(clean).filter(Boolean);
             if (parts.length < 2) return "";
@@ -706,12 +899,14 @@
         let role = "";
         let jd_text = "";
         let companySource = "none";
+        let facts = EMPTY_FACTS;
 
         try {
             const structured = fromJsonLd();
 
             role = structured.role || text(adapter.role) || text("h1");
             jd_text = structured.jd_text || (adapter.jd ? text(adapter.jd) : "") || collectParagraphs();
+            facts = postingFacts(structured, adapter);
 
             // Strongest source first; each candidate must survive acceptCompany.
             const candidates = [
@@ -743,21 +938,99 @@
             role: role && !isPlaceholder(role) ? role : "",
             jd_text: clean(jd_text).slice(0, 8000),
             link: location.href,
-            company_source: companySource
+            company_source: companySource,
+            ...facts
         };
     }
 
-    function text(selector) {
-        if (!selector) return "";
-        return document.querySelector(selector)?.innerText || "";
+    const EMPTY_FACTS = {
+        location: "",
+        remote: false,
+        salary_min: null,
+        salary_max: null,
+        salary_currency: "",
+        salary_period: ""
+    };
+
+    // Just the posting's facts out of a larger job object. Every save path sends
+    // the same set, so a job saved from the card, the popup, or the offer after
+    // a submission carries identical fields — one of them quietly sending fewer
+    // would show up much later as rows that inexplicably have no salary.
+    function postingFieldsOf(job) {
+        const fields = {};
+        Object.keys(EMPTY_FACTS).forEach((key) => {
+            fields[key] = job?.[key] ?? EMPTY_FACTS[key];
+        });
+        return fields;
+    }
+
+    // Mirrors _REMOTE_WORDS in posting.py. The server splits place from
+    // arrangement the same way, so the two can never end up disagreeing.
+    const REMOTE_WORDS = /\b(remote|telecommute|work\s*from\s*home|wfh|distributed)\b/i;
+
+    // The posting's own facts about itself: where the job is and what it pays.
+    //
+    // Only the JSON-LD block is trusted for the salary. A board that renders a
+    // range in the page without declaring it is a board whose markup will move,
+    // and a wrong salary is a number somebody makes a decision on — so an empty
+    // field is the better failure. The location falls back to an adapter
+    // selector, because getting a city wrong costs nothing like as much.
+    function postingFacts(structured, adapter) {
+        const facts = {
+            location: clean(structured.location || ""),
+            remote: Boolean(structured.remote),
+            salary_min: structured.salary_min ?? null,
+            salary_max: structured.salary_max ?? null,
+            salary_currency: structured.salary_currency || "",
+            salary_period: structured.salary_period || ""
+        };
+
+        if (!facts.location && adapter.location) {
+            facts.location = clean(text(adapter.location));
+        }
+
+        if (REMOTE_WORDS.test(facts.location)) facts.remote = true;
+
+        facts.location = facts.location.slice(0, 200);
+        return facts;
+    }
+
+    // Selectors are tried in the order they are written, one at a time.
+    //
+    // Not the same thing as handing the whole list to querySelector, which
+    // returns the first match in DOCUMENT order regardless of which selector
+    // found it. Wellfound's adapter lists `a[href^="/company/"]` — exactly the
+    // employer — after a loose `[class*="company"]`, and the loose one appears
+    // higher in the page, so the precise selector never won and the company came
+    // back as a paragraph of listing copy.
+    //
+    // Splitting on commas is safe for the selectors here; none use :is() or an
+    // attribute value containing one.
+    function eachSelector(list) {
+        return String(list || "")
+            .split(",")
+            .map((part) => part.trim())
+            .filter(Boolean);
+    }
+
+    function text(selectors) {
+        for (const selector of eachSelector(selectors)) {
+            const value = document.querySelector(selector)?.innerText;
+            if (value && value.trim()) return value;
+        }
+        return "";
     }
 
     // Logos carry the company in alt text where no text node exists.
-    function textOrAttr(selector) {
-        if (!selector) return "";
-        const el = document.querySelector(selector);
-        if (!el) return "";
-        return clean(el.innerText || el.getAttribute("alt") || el.content || "");
+    function textOrAttr(selectors) {
+        for (const selector of eachSelector(selectors)) {
+            const el = document.querySelector(selector);
+            if (!el) continue;
+
+            const value = clean(el.innerText || el.getAttribute("alt") || el.content || "");
+            if (value) return value;
+        }
+        return "";
     }
 
     function collectParagraphs() {
@@ -821,6 +1094,7 @@
                             role: job.role,
                             jd_text: job.jd_text,
                             link: location.href,
+                            ...postingFieldsOf(job),
                             at: Date.now()
                         }
                     });
@@ -901,6 +1175,7 @@
                     role: pending.role || "Unknown Role",
                     jd_text: pending.jd_text,
                     link: pending.link,
+                    ...postingFieldsOf(pending),
                     profile: (await chrome.storage.local.get("activeProfile")).activeProfile || null
                 }
             });
@@ -964,6 +1239,716 @@
     }
 
     // -----------------------------------------------------------------------
+    // The match card, in the page
+    //
+    // The score used to exist only behind a click in the popup, which is one
+    // click too many for the decision it informs: whether this posting is worth
+    // reading at all. A number you have to ask for is a number you ask for
+    // after you have already spent the attention.
+    //
+    // So the card scans on arrival — but only the free half. Keyword coverage
+    // is pure string matching over a curated vocabulary, with no model call
+    // behind it (see scoring.py), so showing it unprompted costs nothing. The
+    // requirement-by-requirement analysis is a paid call and stays behind a
+    // button. Same rule as the inbox filter: the cheap pass first, and the
+    // expensive one only once it has earned the call.
+    //
+    // Rendered into a CLOSED shadow root. Two reasons, and the second is the
+    // one that matters: a job board's stylesheet cannot reach in and wreck the
+    // layout, and page scripts cannot read back out. What is on this card —
+    // which skills the user lacks, how poorly they match — is the user's
+    // business and not the employer's.
+    // -----------------------------------------------------------------------
+    const CARD_HOST_TAG = "talent-pilot-match";
+
+    // Below this a page is a search-results list or a stub, not a posting worth
+    // scoring. Scoring a fragment produces a confident number about nothing.
+    const MIN_JD_CHARS = 400;
+
+    // Re-extracting on every mutation of a job board's DOM is wasted work; the
+    // posting does not change that often even when the markup does.
+    const CARD_RESCAN_MS = 1500;
+
+    // Terms are the whole point of the card, so more of them are shown here
+    // than in the 330px popup — but a wall of forty is still nobody's idea of
+    // information.
+    const CARD_CHIP_PREVIEW = 12;
+
+    let cardEnabled = true;
+    let cardDismissed = false;
+    let cardState = { signature: "", keywords: null, analysis: null, collapsed: false };
+    let lastCardScanAt = 0;
+
+    // A closed shadow root cannot be read back off the element, so the handle
+    // has to be kept somewhere. A WeakMap rather than a property on the node:
+    // the page shares the DOM with us and can read any property we set there,
+    // which would hand back the very thing "closed" exists to withhold.
+    const cardRoots = new WeakMap();
+
+    // The card is opt-out rather than opt-in: the whole point is that it is
+    // there before you ask. `chrome.storage.onChanged` is optional-called
+    // because a test harness has no reason to stub an event it does not use.
+    chrome.storage.local
+        .get("inPageCard")
+        .then((stored) => {
+            cardEnabled = stored.inPageCard !== false;
+            if (!cardEnabled) removeCard();
+        })
+        .catch(() => {});
+
+    chrome.storage.onChanged?.addListener?.((changes, area) => {
+        if (area !== "local") return;
+
+        if (changes.inPageCard) {
+            cardEnabled = changes.inPageCard.newValue !== false;
+            if (cardEnabled) {
+                // Turning it back on should not need a reload, and should not
+                // wait out the rescan throttle either.
+                cardDismissed = false;
+                cardState.signature = "";
+                lastCardScanAt = 0;
+                scheduleScan();
+            } else {
+                removeCard();
+            }
+        }
+
+        // A different resume is a different score, so the card is stale the
+        // moment the popup's dropdown changes.
+        if (changes.activeProfile) {
+            cardState = { signature: "", keywords: null, analysis: null, collapsed: false };
+            lastCardScanAt = 0;
+            scheduleScan();
+        }
+    });
+
+    function cardHost() {
+        return document.querySelector(CARD_HOST_TAG);
+    }
+
+    function removeCard() {
+        cardHost()?.remove();
+    }
+
+    // Anchors to try on a site with no adapter of its own — a company careers
+    // page the user enabled on demand. These are the selectors the major ATS
+    // templates share, which is most of what such a page is built from.
+    const CARD_FALLBACK_ANCHORS = [
+        '[data-ui="job-description"]',
+        ".jobs-description__content",
+        "#job-details",
+        ".job__description",
+        '[class*="descriptionText"]',
+        ".posting-details",
+    ];
+
+    // Where the card goes. Above the job description it reads as part of the
+    // posting, which is where the reader already is. A fixed corner is the
+    // fallback for pages whose description cannot be located — a card nobody
+    // can find is the same as no card, but a card wedged into the wrong place
+    // is worse than one in the corner, so the guesses stay conservative.
+    function insertCard(host) {
+        const adapter = adapterFor(location.hostname);
+        const selectors = [adapter.jd, ...CARD_FALLBACK_ANCHORS].filter(Boolean);
+
+        for (const selector of selectors) {
+            const anchor = document.querySelector(selector);
+            if (anchor?.parentElement) {
+                anchor.insertAdjacentElement("beforebegin", host);
+                return "inline";
+            }
+        }
+
+        document.body.appendChild(host);
+        return "floating";
+    }
+
+    async function maybeRenderCard() {
+        if (!cardEnabled || cardDismissed) return;
+        // One card per page, not one per frame: an embedded application form
+        // would otherwise raise a second copy inside the first.
+        if (window.top !== window) return;
+        // Scanning needs a signed-in session and a resume behind it. A card
+        // whose only possible content is an error message is worse than none.
+        if (ruleState !== "ready") return;
+
+        // Throttled whether or not a card is up. extractJobData() parses the
+        // JSON-LD blocks and walks the paragraphs, and a job board mutates its
+        // own DOM continuously — so without this the work happens on every
+        // debounce tick on exactly the busiest pages.
+        const now = Date.now();
+        if (now - lastCardScanAt < CARD_RESCAN_MS) return;
+        lastCardScanAt = now;
+
+        const present = cardHost();
+
+        const job = extractJobData();
+
+        if (!job.jd_text || job.jd_text.length < MIN_JD_CHARS) return;
+        if (!job.company && !job.role) return;
+
+        const signature = `${job.company}|${job.role}|${job.jd_text.length}`;
+
+        // Same posting, card already up: nothing to do. This is what stops the
+        // MutationObserver — which our own insertion triggers — from looping.
+        if (present && signature === cardState.signature) return;
+
+        // A single-page navigation to a different posting. The previous
+        // posting's numbers must not survive into it.
+        if (signature !== cardState.signature) {
+            cardState = { signature, keywords: null, analysis: null, collapsed: false };
+        }
+
+        renderCard(job, { scanning: true });
+
+        const { activeProfile } = await chrome.storage.local.get("activeProfile");
+        const response = await chrome.runtime.sendMessage({
+            type: "KEYWORD_SCAN",
+            jd_text: job.jd_text,
+            profile: activeProfile || null
+        });
+
+        // The page may have navigated on while the scan was in flight.
+        if (cardState.signature !== signature) return;
+
+        cardState.keywords = response?.ok ? response.data : null;
+        renderCard(job, { error: response?.ok ? "" : response?.error || "" });
+    }
+
+    function renderCard(job, { scanning = false, error = "" } = {}) {
+        let host = cardHost();
+        let root;
+
+        if (host) {
+            root = cardRoots.get(host);
+        } else {
+            host = document.createElement(CARD_HOST_TAG);
+            // Closed: the page cannot reach the contents through
+            // element.shadowRoot. See the section comment.
+            root = host.attachShadow({ mode: "closed" });
+            cardRoots.set(host, root);
+
+            const placement = insertCard(host);
+            root.append(buildCardStyles(placement));
+        }
+
+        if (!root) return;
+
+        root.querySelector(".tp-card")?.remove();
+        root.append(buildCard(job, { scanning, error }));
+    }
+
+    function buildCardStyles(placement) {
+        const style = document.createElement("style");
+
+        // `all: initial` on the host, so nothing the page declares inherits in.
+        style.textContent = `
+            :host {
+                all: initial;
+                display: block;
+                ${placement === "floating"
+                    ? `position: fixed; right: 16px; bottom: 16px;
+                       width: min(360px, calc(100vw - 32px));
+                       z-index: 2147483646;`
+                    : "margin: 12px 0 16px;"}
+            }
+            * { box-sizing: border-box; }
+            .tp-card {
+                font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+                font-size: 13px;
+                line-height: 1.45;
+                color: #1f2328;
+                background: #fff;
+                border: 1px solid #dfe3e8;
+                border-left: 4px solid var(--tp-accent, #0073b1);
+                border-radius: 10px;
+                box-shadow: 0 2px 10px rgba(16, 24, 40, 0.08);
+                overflow: hidden;
+            }
+            .tp-head {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                padding: 10px 12px;
+            }
+            .tp-ring {
+                position: relative;
+                flex: 0 0 auto;
+                width: 52px;
+                height: 52px;
+                border-radius: 50%;
+                background: conic-gradient(
+                    var(--tp-accent, #0073b1) calc(var(--tp-pct, 0) * 1%),
+                    #e9ecef 0
+                );
+                display: grid;
+                place-items: center;
+            }
+            .tp-ring::after {
+                content: "";
+                position: absolute;
+                inset: 5px;
+                border-radius: 50%;
+                background: #fff;
+            }
+            .tp-ring span {
+                position: relative;
+                font-size: 14px;
+                font-weight: 700;
+                color: var(--tp-accent, #0073b1);
+            }
+            .tp-title { flex: 1 1 auto; min-width: 0; }
+            .tp-title b { font-size: 13.5px; }
+            .tp-sub { color: #6b7280; font-size: 12px; }
+            .tp-facts { font-weight: 600; color: #374151; }
+            .tp-actions { display: flex; gap: 4px; flex: 0 0 auto; }
+            .tp-icon {
+                all: unset;
+                cursor: pointer;
+                color: #6b7280;
+                font-size: 15px;
+                line-height: 1;
+                padding: 3px 5px;
+                border-radius: 5px;
+            }
+            .tp-icon:hover { background: #f1f3f5; color: #1f2328; }
+            .tp-body { padding: 0 12px 12px; }
+            .tp-row { display: flex; gap: 8px; margin-bottom: 10px; }
+            .tp-btn {
+                all: unset;
+                flex: 1 1 auto;
+                text-align: center;
+                cursor: pointer;
+                padding: 7px 10px;
+                border-radius: 7px;
+                font-size: 12.5px;
+                font-weight: 600;
+                font-family: inherit;
+            }
+            .tp-btn-primary { background: #0073b1; color: #fff; }
+            .tp-btn-primary:hover { background: #005682; }
+            .tp-btn-quiet { background: #eef1f5; color: #374151; }
+            .tp-btn-quiet:hover { background: #e2e6ec; }
+            .tp-btn[disabled] { opacity: 0.6; cursor: default; }
+            .tp-section { font-size: 11.5px; font-weight: 700; margin: 10px 0 2px; }
+            .tp-hint { color: #6b7280; font-size: 11px; margin: 0 0 6px; }
+            .tp-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+            .tp-chip {
+                font-size: 11px;
+                padding: 1px 7px;
+                border-radius: 10px;
+                border: 1px solid #cfe0f5;
+                background: #eef3fb;
+                color: #1d4ed8;
+            }
+            .tp-chip-have { border-color: #bfe3c9; background: #eaf6ee; color: #1e7e34; }
+            .tp-chip-more {
+                background: transparent;
+                border-style: dashed;
+                border-color: #cbd2da;
+                color: #6b7280;
+                cursor: pointer;
+                font-weight: 600;
+            }
+            .tp-gaps { margin: 0; padding-left: 16px; }
+            .tp-gaps li { font-size: 11.5px; color: #374151; margin-bottom: 2px; }
+            .tp-verdict {
+                font-size: 12px;
+                font-weight: 600;
+                padding: 6px 9px;
+                border-radius: 7px;
+                margin-bottom: 8px;
+            }
+            .tp-good { background: #e6f4ea; color: #1e7e34; }
+            .tp-mid  { background: #fff4e5; color: #92400e; }
+            .tp-low  { background: #fdecea; color: #a02622; }
+            .tp-note { font-size: 11.5px; color: #6b7280; }
+            .tp-warn { font-size: 11.5px; color: #a02622; }
+            .tp-summary { font-size: 11.5px; color: #374151; margin-top: 8px; }
+            @media (prefers-color-scheme: dark) {
+                .tp-card { background: #1b1f24; border-color: #30363d; color: #e6edf3; }
+                .tp-ring::after { background: #1b1f24; }
+                .tp-icon:hover { background: #262c33; color: #e6edf3; }
+                .tp-btn-quiet { background: #262c33; color: #d0d7de; }
+                .tp-btn-quiet:hover { background: #30363d; }
+                .tp-gaps li, .tp-summary, .tp-facts { color: #c9d1d9; }
+            }
+        `;
+
+        return style;
+    }
+
+    // "Remote · Bengaluru · INR 1,800,000–2,400,000/yr", or as much of it as the
+    // posting declared. Mirrors format_salary / format_location in posting.py —
+    // the dashboard renders the stored columns and this renders what was just
+    // scraped, so the two must agree on how a salary reads.
+    const PERIOD_SUFFIX = {
+        HOUR: "/hr", DAY: "/day", WEEK: "/wk", MONTH: "/mo", YEAR: "/yr"
+    };
+
+    // Grouped by hand rather than with toLocaleString, which follows the
+    // browser's locale: the same salary would read "1,800,000" in one browser
+    // and "18,00,000" in another, and neither would match the dashboard, which
+    // has no locale to follow. One number, one spelling, everywhere.
+    function groupDigits(value) {
+        return String(Math.round(value)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    }
+
+    // Mirrors ui.NOT_STATED. Both halves are always rendered, with NA where the
+    // posting said nothing: a missing line cannot be told apart from a broken
+    // one, and "this posting does not state a salary" is itself worth knowing
+    // before applying. The emoji labels are what make a bare NA mean something —
+    // it answers a question the reader can see.
+    const NOT_STATED = "NA";
+
+    function describeFacts(job) {
+        const where = [job.remote ? "Remote" : "", job.location].filter(Boolean).join(" · ");
+
+        const low = job.salary_min;
+        const high = job.salary_max ?? job.salary_min;
+        let pay = "";
+
+        if (typeof low === "number" && low > 0) {
+            const currency = (job.salary_currency || "").trim();
+            const period = PERIOD_SUFFIX[(job.salary_period || "").toUpperCase()] || "";
+            const range = low === high
+                ? groupDigits(low)
+                : `${groupDigits(low)}–${groupDigits(high)}`;
+            pay = `${currency ? currency + " " : ""}${range}${period}`;
+        }
+
+        return `📍 ${where || NOT_STATED}  ·  💰 ${pay || NOT_STATED}`;
+    }
+
+    // Bands are shared with the popup on purpose: one number must not mean
+    // "strong" in one surface and "weak" in the other.
+    function bandFor(value) {
+        if (value >= 75) return { klass: "tp-good", colour: "#1e7e34" };
+        if (value >= 50) return { klass: "tp-mid", colour: "#b45309" };
+        return { klass: "tp-low", colour: "#c9302c" };
+    }
+
+    function buildCard(job, { scanning, error }) {
+        const card = document.createElement("div");
+        card.className = "tp-card";
+
+        const keywords = cardState.keywords;
+        const analysis = cardState.analysis;
+
+        // The headline number is the AI fit once it exists, and the free
+        // keyword score until then — in that order, because the fit is the
+        // better answer and the keyword score is the one available instantly.
+        const headline = analysis
+            ? analysis.match_percentage
+            : keywords?.scored
+            ? keywords.score
+            : null;
+
+        const band = bandFor(headline ?? 0);
+        card.style.setProperty("--tp-accent", headline === null ? "#6b7280" : band.colour);
+
+        card.append(buildCardHead(job, { headline, scanning, analysis, keywords }));
+
+        if (!cardState.collapsed) {
+            card.append(buildCardBody(job, { scanning, error, analysis, keywords }));
+        }
+
+        return card;
+    }
+
+    function buildCardHead(job, { headline, scanning, analysis, keywords }) {
+        const head = document.createElement("div");
+        head.className = "tp-head";
+
+        const ring = document.createElement("div");
+        ring.className = "tp-ring";
+        ring.style.setProperty("--tp-pct", String(headline ?? 0));
+
+        const value = document.createElement("span");
+        value.textContent = headline === null ? "–" : `${headline}%`;
+        ring.append(value);
+
+        const title = document.createElement("div");
+        title.className = "tp-title";
+
+        const heading = document.createElement("b");
+        heading.textContent = analysis ? "Resume match" : "Keyword match";
+
+        const sub = document.createElement("div");
+        sub.className = "tp-sub";
+
+        if (scanning && !keywords) {
+            sub.textContent = "Checking your resume…";
+        } else if (analysis) {
+            const coverage = analysis.coverage || {};
+            sub.textContent = coverage.required_total
+                ? `${coverage.required_met} of ${coverage.required_total} must-haves met`
+                : "Scored against this posting's requirements";
+        } else if (keywords?.scored) {
+            sub.textContent =
+                `${keywords.matched.length} of ${keywords.total} keywords are in your resume`;
+        } else {
+            sub.textContent = "No known skill terms in this posting";
+        }
+
+        title.append(heading, sub);
+
+        // What the posting says about itself, on its own line. This is the fact
+        // a reader wants before any score — and until now it was being parsed
+        // out of the JSON-LD block and thrown away.
+        const line = document.createElement("div");
+        line.className = "tp-sub tp-facts";
+        line.textContent = describeFacts(job);
+        title.append(line);
+
+        const actions = document.createElement("div");
+        actions.className = "tp-actions";
+
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "tp-icon";
+        toggle.textContent = cardState.collapsed ? "▾" : "▴";
+        toggle.title = cardState.collapsed ? "Expand" : "Collapse";
+        toggle.addEventListener("click", () => {
+            cardState.collapsed = !cardState.collapsed;
+            renderCard(job);
+        });
+
+        const close = document.createElement("button");
+        close.type = "button";
+        close.className = "tp-icon";
+        close.textContent = "✕";
+        close.title = "Hide on this page";
+        close.addEventListener("click", () => {
+            // This page only. Turning the card off everywhere is a setting, and
+            // a close button that silently disables a feature is a trap.
+            cardDismissed = true;
+            removeCard();
+        });
+
+        actions.append(toggle, close);
+        head.append(ring, title, actions);
+
+        return head;
+    }
+
+    function buildCardBody(job, { scanning, error, analysis, keywords }) {
+        const body = document.createElement("div");
+        body.className = "tp-body";
+
+        const row = document.createElement("div");
+        row.className = "tp-row";
+
+        const analyse = document.createElement("button");
+        analyse.type = "button";
+        analyse.className = "tp-btn tp-btn-primary";
+        analyse.textContent = analysis ? "↻ Re-run AI match" : "🧠 Full AI match";
+        analyse.disabled = scanning;
+        analyse.addEventListener("click", () => runCardAnalysis(job, analyse));
+
+        const save = document.createElement("button");
+        save.type = "button";
+        save.className = "tp-btn tp-btn-quiet";
+        save.textContent = "💾 Save";
+        save.addEventListener("click", () => saveFromCard(job, save));
+
+        row.append(analyse, save);
+        body.append(row);
+
+        // Reported above the results and below the buttons, so a quota failure
+        // or a sleeping service worker leaves the retry one click away. An
+        // error that replaces the whole card is an error you cannot act on.
+        if (error) {
+            const warning = document.createElement("div");
+            warning.className = "tp-warn";
+            warning.textContent = error;
+            body.append(warning);
+        }
+
+        if (analysis) {
+            const verdict = document.createElement("div");
+            const band = bandFor(analysis.match_percentage);
+            verdict.className = `tp-verdict ${band.klass}`;
+            verdict.textContent =
+                analysis.match_percentage >= 75
+                    ? "✅ Strong fit — apply"
+                    : analysis.match_percentage >= 50
+                    ? "🟡 Close fit — worth tailoring"
+                    : "🔴 Weak fit — a stretch on the must-haves";
+            body.append(verdict);
+
+            if (analysis.missing_skills?.length) {
+                body.append(
+                    cardSection(
+                        `⚠️ Gaps a recruiter would probe (${analysis.missing_skills.length})`,
+                        "Requirements your resume does not evidence.",
+                        cardGapList(analysis.missing_skills)
+                    )
+                );
+            }
+
+            if (analysis.summary) {
+                const summary = document.createElement("div");
+                summary.className = "tp-summary";
+                summary.textContent = analysis.summary;
+                body.append(summary);
+            }
+        }
+
+        // The keyword lists stay visible after the AI run: they answer a
+        // different question — whether a filter surfaces you at all — and the
+        // literal terms are the actionable half.
+        if (keywords?.missing?.length) {
+            body.append(
+                cardSection(
+                    `🔍 Terms this posting uses that you don't (${keywords.missing.length})`,
+                    "A filter matches text, not meaning. Add only what you can genuinely claim.",
+                    cardChips(keywords.missing, "")
+                )
+            );
+        }
+
+        if (keywords?.matched?.length) {
+            body.append(
+                cardSection(
+                    `✅ Terms you already have (${keywords.matched.length})`,
+                    "",
+                    cardChips(keywords.matched, "tp-chip-have")
+                )
+            );
+        }
+
+        return body;
+    }
+
+    function cardSection(title, hint, content) {
+        const fragment = document.createDocumentFragment();
+
+        const heading = document.createElement("div");
+        heading.className = "tp-section";
+        heading.textContent = title;
+        fragment.append(heading);
+
+        if (hint) {
+            const explanation = document.createElement("p");
+            explanation.className = "tp-hint";
+            explanation.textContent = hint;
+            fragment.append(explanation);
+        }
+
+        fragment.append(content);
+        return fragment;
+    }
+
+    function cardChips(items, extraClass) {
+        const wrap = document.createElement("div");
+        wrap.className = "tp-chips";
+
+        const visible = items.slice(0, CARD_CHIP_PREVIEW);
+        const overflow = items.slice(CARD_CHIP_PREVIEW);
+
+        const addChip = (item) => {
+            const chip = document.createElement("span");
+            chip.className = `tp-chip ${extraClass}`.trim();
+            // Model- and page-derived text, so a text node and never markup.
+            chip.textContent = item;
+            wrap.append(chip);
+        };
+
+        visible.forEach(addChip);
+
+        if (overflow.length) {
+            const more = document.createElement("span");
+            more.className = "tp-chip tp-chip-more";
+            more.textContent = `+${overflow.length} more`;
+            more.addEventListener("click", () => {
+                more.remove();
+                overflow.forEach(addChip);
+            });
+            wrap.append(more);
+        }
+
+        return wrap;
+    }
+
+    function cardGapList(items) {
+        const list = document.createElement("ul");
+        list.className = "tp-gaps";
+
+        items.forEach((item) => {
+            const row = document.createElement("li");
+            row.textContent = item;
+            list.append(row);
+        });
+
+        return list;
+    }
+
+    async function runCardAnalysis(job, button) {
+        button.disabled = true;
+        button.textContent = "🤖 Analysing…";
+
+        const { activeProfile } = await chrome.storage.local.get("activeProfile");
+        const response = await chrome.runtime.sendMessage({
+            type: "ANALYZE_JOB",
+            job: {
+                company: job.company || "Unknown Company",
+                role: job.role || "Unknown Role",
+                jd_text: job.jd_text,
+                link: location.href,
+                profile: activeProfile || null
+            }
+        });
+
+        if (!response?.ok) {
+            renderCard(job, { error: response?.error || "The analysis could not be run." });
+            return;
+        }
+
+        cardState.analysis = response.data;
+        renderCard(job);
+    }
+
+    async function saveFromCard(job, button) {
+        button.disabled = true;
+        button.textContent = "Saving…";
+
+        // Asked rather than assumed, and by the same rule the popup uses: a
+        // wrong company splits one application into two rows that never
+        // reconcile, so an unnamed employer is a reason to stop.
+        if (!job.company) {
+            button.textContent = "Company not detected — use the popup";
+            return;
+        }
+
+        const check = await chrome.runtime.sendMessage({
+            type: "CHECK_JOB",
+            company: job.company,
+            role: job.role || "Unknown Role"
+        });
+
+        if (check?.ok && check.data.exists) {
+            button.textContent = `Already tracked · ${check.data.status}`;
+            return;
+        }
+
+        const { activeProfile } = await chrome.storage.local.get("activeProfile");
+        const response = await chrome.runtime.sendMessage({
+            type: "SAVE_JOB",
+            job: {
+                company: job.company,
+                role: job.role || "Unknown Role",
+                jd_text: job.jd_text,
+                link: location.href,
+                ...postingFieldsOf(job),
+                profile: activeProfile || null
+            }
+        });
+
+        button.textContent = response?.ok ? "✅ Saved" : "Could not save";
+    }
+
+    // -----------------------------------------------------------------------
     // Wiring
     // -----------------------------------------------------------------------
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -974,8 +1959,20 @@
             loadAutofillRules().then(() => {
                 // A sign-out has to remove what is already on the page; leaving
                 // the boxes up would keep the previous account's answers one
-                // click from being filled in.
-                if (!autofillRules.length) removeSuggestions();
+                // click from being filled in, and the card would go on showing
+                // the previous account's score.
+                if (ruleState !== "ready") {
+                    removeSuggestions();
+                    removeCard();
+                    cardState = {
+                        signature: "",
+                        keywords: null,
+                        analysis: null,
+                        collapsed: false,
+                    };
+                } else if (!autofillRules.length) {
+                    removeSuggestions();
+                }
                 scheduleScan();
             });
             return false;
@@ -1014,6 +2011,9 @@
             scheduled = false;
             scanAndSuggest();
             injectAIGenerateButtons();
+            // Deliberately not awaited. The card is an enhancement; a failure
+            // inside it must not stop the form suggestions above from running.
+            maybeRenderCard().catch(() => {});
         }, 400);
     }
 

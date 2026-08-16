@@ -14,6 +14,7 @@ PROTECTED_ENDPOINTS = [
     ("post", "/check-job", {"company": "Acme", "role": "Engineer"}),
     ("post", "/save-job", {"company": "Acme", "role": "Engineer"}),
     ("post", "/analyze-job", {"company": "Acme", "role": "Engineer"}),
+    ("post", "/keyword-scan", {"jd_text": "Python"}),
     ("post", "/generate-answer", {"question": "Why us?"}),
     ("post", "/save-answer", {"question": "Why us?", "answer": "Because."}),
     ("get", "/auth/me", None),
@@ -340,6 +341,162 @@ def test_a_long_essay_is_not_added_to_the_bank(account, monkeypatch):
 
     assert response.json()["reusable"] is False
     assert client.get("/autofill", headers=account["headers"]).json()["rules"] == []
+
+
+# =====================================================================
+# SALARY AND LOCATION
+# =====================================================================
+# Declared by the posting's JSON-LD block and forwarded by the extension. The
+# server does not trust them: an unusable value is dropped so the application
+# still saves, because failing a save over an odd salary is worse than saving
+# without one.
+def test_a_posting_saves_its_salary_and_location(account):
+    response = client.post(
+        "/save-job",
+        json={
+            "company": "Nexus Labs",
+            "role": "AI Engineer",
+            "location": "Bengaluru, Karnataka",
+            "remote": True,
+            "salary_min": 1800000,
+            "salary_max": 2400000,
+            "salary_currency": "INR",
+            "salary_period": "YEAR",
+        },
+        headers=account["headers"],
+    )
+    assert response.status_code == 201
+
+    job = _only_job(account)
+
+    assert job["location"] == "Bengaluru, Karnataka"
+    assert job["remote"] == 1
+    assert job["salary_min"] == 1800000
+    assert job["salary_max"] == 2400000
+    assert job["salary_currency"] == "INR"
+    assert job["salary_period"] == "YEAR"
+
+
+def test_an_unusable_salary_does_not_fail_the_save(account):
+    """A requisition id or a timestamp in the salary slot. The application is
+    still worth tracking; the number is not."""
+    response = client.post(
+        "/save-job",
+        json={
+            "company": "Nexus Labs",
+            "role": "AI Engineer",
+            "salary_min": 1755302400000,
+            "salary_currency": "USD",
+            "salary_period": "YEAR",
+        },
+        headers=account["headers"],
+    )
+    assert response.status_code == 201
+
+    job = _only_job(account)
+
+    assert job["salary_min"] is None
+    assert job["salary_max"] is None
+
+
+def test_a_location_of_remote_is_stored_as_the_flag(account):
+    """Never in both places, or every reader has to decide which to believe."""
+    response = client.post(
+        "/save-job",
+        json={"company": "Nexus Labs", "role": "AI Engineer", "location": "Remote"},
+        headers=account["headers"],
+    )
+    assert response.status_code == 201
+
+    job = _only_job(account)
+
+    assert job["location"] == ""
+    assert job["remote"] == 1
+
+
+def test_a_posting_with_neither_saves_cleanly(account):
+    """The overwhelmingly common case: LinkedIn declares no JobPosting block."""
+    response = client.post(
+        "/save-job",
+        json={"company": "Nexus Labs", "role": "AI Engineer"},
+        headers=account["headers"],
+    )
+    assert response.status_code == 201
+
+    job = _only_job(account)
+
+    assert job["location"] == ""
+    assert job["remote"] == 0
+    assert job["salary_min"] is None
+
+
+def _only_job(account) -> dict:
+    jobs = client.get("/jobs", headers=account["headers"]).json()["jobs"]
+    assert len(jobs) == 1
+    return jobs[0]
+
+
+# =====================================================================
+# KEYWORD SCAN
+# =====================================================================
+# The in-page card runs this on arrival at every job page, which is only
+# defensible because it costs nothing: no model call, no network, and the same
+# answer every time. These tests pin exactly that.
+def test_keyword_scan_needs_no_model_call(account, monkeypatch):
+    """If this endpoint ever grew an AI call it would be billing the user for
+    opening a page. Break generate_structured and it must still answer."""
+    import ai.gemini
+
+    def explode(*args, **kwargs):  # pragma: no cover - must never be reached
+        raise AssertionError("/keyword-scan must not call the model")
+
+    monkeypatch.setattr(ai.gemini, "generate_structured", explode)
+
+    response = client.post(
+        "/keyword-scan",
+        json={"jd_text": "We need strong Python and Kubernetes experience."},
+        headers=account["headers"],
+    )
+
+    assert response.status_code == 200
+    assert response.json()["scored"] is True
+
+
+def test_keyword_scan_reports_terms_the_resume_lacks(account):
+    """A brand-new account has no resume, so every term the posting names is
+    missing — and the endpoint says so rather than failing."""
+    response = client.post(
+        "/keyword-scan",
+        json={"jd_text": "Requirements: Python, Kubernetes, and PostgreSQL."},
+        headers=account["headers"],
+    )
+
+    body = response.json()
+
+    assert set(body["missing"]) == {"Python", "Kubernetes", "PostgreSQL"}
+    assert body["matched"] == []
+    assert body["score"] == 0
+
+
+def test_keyword_scan_says_when_a_posting_names_nothing_it_knows():
+    """Reporting 0% for a posting with no recognised terms would read as a
+    terrible match rather than as a scan that found nothing to measure."""
+    import scoring
+
+    result = scoring.keyword_coverage("We are looking for a great teammate.", "{}")
+
+    assert result["scored"] is False
+    assert result["total"] == 0
+
+
+def test_keyword_scan_rejects_a_traversal_in_the_profile_name(account):
+    response = client.post(
+        "/keyword-scan",
+        json={"jd_text": "Python", "profile": "../../../etc/passwd"},
+        headers=account["headers"],
+    )
+
+    assert response.status_code == 400
 
 
 def test_privacy_policy_is_public():
