@@ -296,3 +296,62 @@ def test_the_genai_posting_no_longer_scores_ninety():
     # same posting at 30%, from completely different inputs. The model's 90 was
     # not a different opinion, it was wrong.
     assert abs(result["score"] - 30) <= 5
+
+
+# =====================================================================
+# ALTERNATIVES ARE ONE REQUIREMENT
+# =====================================================================
+# A job asking for "Python, Go, or Node.js" is asking for one of them. Listing
+# the two the candidate lacks as their own absent must-haves invents gaps the
+# job never asked for, inflates the denominator, and drags a good candidate
+# under. Guarded by a prompt rule, and pinned here so the arithmetic that makes
+# it matter cannot drift.
+KDK_REQUIREMENTS = [
+    req("Backend experience in Python, Go, or Node.js"),
+    req("LLM applications using OpenAI, Claude, or Hugging Face", status="partial"),
+    req("LangChain or LlamaIndex"),
+    req("Retrieval-Augmented Generation"),
+    req("Vector database such as Pinecone, Weaviate, or pgvector", status="partial"),
+    req("Cloud platform (AWS, GCP, or Azure)"),
+    req("APIs"),
+    req("Microservices", status="absent"),
+    req("Prompt Engineering"),
+    req("Model Integration"),
+    req("Security and Compliance best practices", status="absent"),
+    req("AI Performance Monitoring and Optimization", status="partial"),
+    req("B.Tech / BCA or technical certification"),
+    req("FinTech or SaaS domain", "preferred", status="absent"),
+    req("LLMOps", "preferred", status="absent"),
+    req("Model Fine-tuning", "preferred", status="absent"),
+    req("CI/CD for AI Applications", "preferred", status="absent"),
+    req("Observability for AI systems", "preferred", status="partial"),
+]
+
+
+def test_grouped_alternatives_score_the_candidate_fairly():
+    """Eight must-haves demonstrated, three partial, two genuinely absent."""
+    result = scoring.score_requirements(scoring.normalise_requirements(KDK_REQUIREMENTS))
+
+    assert result["required_total"] == 13
+    assert result["required_met"] == 9.5
+    assert result["score"] == 60
+
+
+def test_splitting_alternatives_invents_gaps_and_sinks_the_score():
+    """The observed failure: Go, Node.js and LlamaIndex reported as gaps for a
+    candidate whose Python and LangChain already satisfy those requirements."""
+    split = KDK_REQUIREMENTS + [
+        req("Go", status="absent"),
+        req("Node.js", status="absent"),
+        req("LlamaIndex", status="absent"),
+        req("Hugging Face", status="absent"),
+    ]
+
+    correct = scoring.score_requirements(scoring.normalise_requirements(KDK_REQUIREMENTS))
+    inflated = scoring.score_requirements(scoring.normalise_requirements(split))
+
+    # Four requirements the job never separately asked for, and the score falls
+    # far enough to flip the verdict from "worth tailoring" to "weak fit".
+    assert inflated["required_total"] == 17
+    assert inflated["score"] < correct["score"] - 10
+    assert correct["score"] >= 50 > inflated["score"]

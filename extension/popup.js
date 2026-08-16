@@ -35,6 +35,44 @@ function show(id, visible = true) {
     el(id).classList.toggle("hidden", !visible);
 }
 
+// "Remote · Bengaluru · INR 1,800,000–2,400,000/yr", or as much of it as the
+// posting declared. Mirrors describeFacts in content.js and format_salary in
+// posting.py; all three render the same fields and have to read alike.
+const PERIOD_SUFFIX = {
+    HOUR: "/hr", DAY: "/day", WEEK: "/wk", MONTH: "/mo", YEAR: "/yr"
+};
+
+// Grouped by hand rather than with toLocaleString, which follows the browser's
+// locale: the same salary would read "1,800,000" in one browser and "18,00,000"
+// in another, and neither would match the dashboard, which has no locale to
+// follow. One number, one spelling, everywhere.
+function groupDigits(value) {
+    return String(Math.round(value)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+// Mirrors ui.NOT_STATED. Both halves are always rendered, with NA where the
+// posting said nothing — a missing line cannot be told apart from a broken one.
+const NOT_STATED = "NA";
+
+function describeFacts(job) {
+    const where = [job.remote ? "Remote" : "", job.location].filter(Boolean).join(" · ");
+
+    const low = job.salary_min;
+    const high = job.salary_max ?? job.salary_min;
+    let pay = "";
+
+    if (typeof low === "number" && low > 0) {
+        const currency = (job.salary_currency || "").trim();
+        const period = PERIOD_SUFFIX[(job.salary_period || "").toUpperCase()] || "";
+        const range = low === high
+            ? groupDigits(low)
+            : `${groupDigits(low)}–${groupDigits(high)}`;
+        pay = `${currency ? currency + " " : ""}${range}${period}`;
+    }
+
+    return `📍 ${where || NOT_STATED}  ·  💰 ${pay || NOT_STATED}`;
+}
+
 function renderJobInfo(job) {
     const box = el("job-info");
     box.textContent = "";
@@ -48,69 +86,233 @@ function renderJobInfo(job) {
     role.textContent = job.role || "Role not detected";
 
     box.append(company, role);
+
+    const line = document.createElement("div");
+    line.className = "job-facts";
+    line.textContent = describeFacts(job);
+    box.append(line);
+}
+
+// How many chips to show before collapsing the rest behind a count. Nineteen
+// comma-separated terms in a 330px popup is a wall nobody reads; eight is
+// about a glance.
+const CHIP_PREVIEW = 8;
+
+function scoreBand(value) {
+    if (value >= 75) return "score-good";
+    if (value >= 50) return "score-mid";
+    return "score-low";
+}
+
+function buildScoreCard(value, label, sub) {
+    const card = document.createElement("div");
+    card.className = "score-card";
+
+    // A dial, and the same dial the in-page card draws. The shape is read
+    // before the digits are, and the two surfaces have to agree on what a
+    // given number looks like or they read as two different measurements.
+    const ring = document.createElement("div");
+    ring.className = `score-ring ${scoreBand(value)}`;
+    ring.style.setProperty("--pct", String(Math.max(0, Math.min(100, value))));
+
+    const number = document.createElement("div");
+    number.className = "score-value";
+    number.textContent = `${value}%`;
+    ring.append(number);
+
+    const name = document.createElement("div");
+    name.className = "score-label";
+    name.textContent = label;
+
+    card.append(ring, name);
+
+    // Each fact on its own line. Joined with a separator they wrapped
+    // mid-phrase at this width, which reads as a mistake rather than a detail.
+    [].concat(sub || []).filter(Boolean).forEach((line) => {
+        const detail = document.createElement("div");
+        detail.className = "score-sub";
+        detail.textContent = line;
+        card.append(detail);
+    });
+
+    return card;
+}
+
+// One line saying what the number means, so the score does not have to be
+// interpreted from scratch every time.
+function buildVerdict(fit, keywordScore) {
+    const verdict = document.createElement("div");
+
+    let band;
+    let text;
+
+    if (fit >= 75) {
+        band = "verdict-good";
+        text = "✅ Strong fit — apply";
+    } else if (fit >= 50) {
+        band = "verdict-mid";
+        text = "🟡 Close fit — worth tailoring";
+    } else {
+        band = "verdict-low";
+        text = "🔴 Weak fit — a stretch on the must-haves";
+    }
+
+    verdict.className = `verdict ${band}`;
+    verdict.textContent = text;
+
+    // A good candidate filtered out before a person ever sees them is a
+    // different problem from a weak candidate, so it gets its own line rather
+    // than being appended into the same sentence.
+    if (fit >= 50 && keywordScore !== null && keywordScore < 40) {
+        const note = document.createElement("span");
+        note.className = "verdict-note";
+        note.textContent = "A keyword filter may screen you out first.";
+        verdict.append(note);
+    }
+
+    return verdict;
+}
+
+// A wrapping row of chips, with anything past the preview hidden behind a
+// "+N more" that reveals the rest in place.
+function buildChips(items, className) {
+    const row = document.createElement("div");
+    row.className = "chips";
+
+    const visible = items.slice(0, CHIP_PREVIEW);
+    const overflow = items.slice(CHIP_PREVIEW);
+
+    // Scraped and model-produced values, so text nodes only — never innerHTML.
+    visible.forEach((item) => {
+        const chip = document.createElement("span");
+        chip.className = `chip ${className}`;
+        chip.textContent = item;
+        row.append(chip);
+    });
+
+    if (overflow.length) {
+        const more = document.createElement("span");
+        more.className = "chip chip-more";
+        more.textContent = `+${overflow.length} more`;
+
+        more.addEventListener("click", () => {
+            more.remove();
+            overflow.forEach((item) => {
+                const chip = document.createElement("span");
+                chip.className = `chip ${className}`;
+                chip.textContent = item;
+                row.append(chip);
+            });
+        });
+
+        row.append(more);
+    }
+
+    return row;
+}
+
+// Phrases like "Security and Compliance best practices" do not fit in a pill.
+// A list gives them room and stays readable at this width.
+function buildGapList(items) {
+    const list = document.createElement("ul");
+    list.className = "gap-list";
+
+    items.forEach((item) => {
+        const row = document.createElement("li");
+        row.textContent = item;
+        list.append(row);
+    });
+
+    return list;
+}
+
+function buildSection(title, hint, body) {
+    const fragment = document.createDocumentFragment();
+
+    const heading = document.createElement("div");
+    heading.className = "section-title";
+    heading.textContent = title;
+
+    const explanation = document.createElement("p");
+    explanation.className = "section-hint";
+    explanation.textContent = hint;
+
+    fragment.append(heading, explanation, body);
+    return fragment;
 }
 
 function renderAnalysis(result) {
     const area = el("status-area");
     area.textContent = "";
 
-    const score = document.createElement("div");
-    score.className = "score";
-    score.textContent = `Recruiter fit: ${result.match_percentage}%`;
+    const coverage = result.coverage || {};
+    const keywords = result.keyword_coverage || {};
 
-    area.append(score);
+    // Two numbers, side by side, because they answer different questions and
+    // a candidate can be strong on one and screened out by the other.
+    const scores = document.createElement("div");
+    scores.className = "scores";
 
-    // How that figure was reached. The number used to be the model's opinion;
-    // it is now computed from the requirement classifications, and saying so
-    // is the difference between a score and an assertion.
-    const coverage = result.coverage;
-    if (coverage?.required_total) {
-        const working = document.createElement("div");
-        working.className = "muted";
-        working.textContent =
-            `${coverage.required_met} of ${coverage.required_total} must-haves` +
-            (coverage.preferred_total
-                ? `, ${coverage.preferred_met} of ${coverage.preferred_total} preferred`
-                : "");
-        area.append(working);
-    }
-
-    // A filter matches text, not meaning, so a strong candidate can still be
-    // screened out. Reported separately because it is a different problem with
-    // a different fix.
-    const keywords = result.keyword_coverage;
-    if (keywords?.scored) {
-        const ats = document.createElement("div");
-        ats.className = "score";
-        ats.textContent = `Keyword coverage: ${keywords.score}%`;
-        area.append(ats);
-    }
-
-    const summary = document.createElement("p");
-    summary.className = "muted";
-    summary.textContent = result.summary;
-    area.append(summary);
-
-    const missingLabel = document.createElement("b");
-    missingLabel.textContent = "Missing: ";
-
-    const missing = document.createElement("div");
-    missing.append(
-        missingLabel,
-        document.createTextNode(
-            result.missing_skills.length ? result.missing_skills.join(", ") : "None"
-        )
+    scores.append(
+        buildScoreCard(result.match_percentage, "Recruiter fit", [
+            coverage.required_total
+                ? `${coverage.required_met}/${coverage.required_total} must-haves`
+                : "",
+            coverage.preferred_total
+                ? `${coverage.preferred_met}/${coverage.preferred_total} preferred`
+                : "",
+        ])
     );
-    area.append(missing);
 
-    if (keywords?.missing?.length) {
-        const termsLabel = document.createElement("b");
-        termsLabel.textContent = "Terms not on your resume: ";
+    if (keywords.scored) {
+        scores.append(
+            buildScoreCard(keywords.score, "Keyword match", [
+                `${keywords.matched.length}/${keywords.total} terms found`,
+            ])
+        );
+    }
 
-        const terms = document.createElement("div");
-        terms.className = "muted";
-        terms.append(termsLabel, document.createTextNode(keywords.missing.join(", ")));
-        area.append(terms);
+    area.append(scores);
+    area.append(buildVerdict(result.match_percentage, keywords.scored ? keywords.score : null));
+
+    // The two kinds of absence are deliberately separated. They overlap, and
+    // without the distinction it reads as the same gap listed twice.
+    if (result.missing_skills?.length) {
+        area.append(
+            buildSection(
+                `⚠️ Gaps a recruiter would probe (${result.missing_skills.length})`,
+                "Requirements your resume does not evidence.",
+                buildGapList(result.missing_skills)
+            )
+        );
+    }
+
+    if (keywords.missing?.length) {
+        area.append(
+            buildSection(
+                `🔍 Words a filter looks for (${keywords.missing.length})`,
+                "Literal terms the posting uses. Add only the ones you can genuinely claim.",
+                buildChips(keywords.missing, "chip-term")
+            )
+        );
+    }
+
+    // Last, and clamped. The summary is the most useful thing to read second
+    // and the worst thing to have to scroll past first.
+    if (result.summary) {
+        const summary = document.createElement("div");
+        summary.className = "summary-box clamped";
+        summary.textContent = result.summary;
+
+        const toggle = document.createElement("span");
+        toggle.className = "summary-toggle";
+        toggle.textContent = "Read the full summary";
+        toggle.addEventListener("click", () => {
+            const collapsed = summary.classList.toggle("clamped");
+            toggle.textContent = collapsed ? "Read the full summary" : "Show less";
+        });
+
+        area.append(summary, toggle);
     }
 }
 
@@ -229,7 +431,18 @@ async function loadSettings() {
     if (response.ok) {
         el("settings-api-url").value = response.data.apiUrl;
     }
+
+    // Opt-out, so an unset value means on.
+    const { inPageCard } = await chrome.storage.local.get("inPageCard");
+    el("setting-in-page-card").checked = inPageCard !== false;
 }
+
+// Written straight to storage rather than routed through the service worker:
+// open job pages watch this key with chrome.storage.onChanged and show or hide
+// the card without needing a reload.
+el("setting-in-page-card").addEventListener("change", (event) => {
+    chrome.storage.local.set({ inPageCard: event.target.checked });
+});
 
 el("settings-form").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -513,6 +726,14 @@ function jobPayload() {
         role: currentJob.role || "Unknown Role",
         jd_text: currentJob.jd_text,
         link: currentJob.link,
+        // Declared by the posting rather than typed by anyone. Sent on every
+        // save path so a row's origin never determines whether it has a salary.
+        location: currentJob.location || "",
+        remote: Boolean(currentJob.remote),
+        salary_min: currentJob.salary_min ?? null,
+        salary_max: currentJob.salary_max ?? null,
+        salary_currency: currentJob.salary_currency || "",
+        salary_period: currentJob.salary_period || "",
         profile: el("profile-dropdown").value || null
     };
 }

@@ -160,13 +160,30 @@ def analyze_jd(jd_text: str, resume_data: str) -> dict:
     1. One entry per distinct requirement. Never list the same skill twice
        under different names: "LLM" and "Large Language Models" are one
        requirement, as are "GCP" and "Google Cloud".
-    2. Only concrete skills, tools, platforms, and domain experience. Never
+    2. ALTERNATIVES ARE ONE REQUIREMENT. When a requirement offers a choice —
+       "Python, Go, or Node.js", "LangChain or LlamaIndex", "AWS, GCP, or
+       Azure", "Pinecone, Weaviate, or pgvector" — the job is asking for ANY
+       ONE of them, not all of them.
+         - List it ONCE, using the whole phrase as the skill.
+         - Mark it "demonstrated" if the resume shows ANY ONE alternative.
+         - NEVER list the alternatives the candidate lacks as their own
+           requirements. A candidate with Python does not have a "Go" gap, and
+           a candidate with LangChain does not have a "LlamaIndex" gap.
+       This is the single most common way this assessment goes wrong: it
+       invents gaps that the job description never asked for, and every
+       invented gap makes a good candidate look unqualified.
+    3. A job description often states the same requirement twice, once in a
+       responsibilities or experience section and again in a skills list.
+       That is still one requirement.
+    4. Only concrete skills, tools, platforms, and domain experience. Never
        list job-description prose such as "collaborate", "best practices",
        "solutions", "technical" or "development".
-    3. Do not award "demonstrated" for something the resume merely implies.
-       Adjacent evidence is "partial". Be strict: this assessment is only
-       useful if it is honest about gaps.
-    4. Do not produce a score or a percentage anywhere. The score is computed
+    5. Do not award "demonstrated" for something the resume merely implies.
+       Adjacent evidence is "partial" — the underlying technique without the
+       named tool, or a different vendor in the same category where the job
+       named specific ones and offered no choice. Be strict: this assessment
+       is only useful if it is honest about gaps.
+    6. Do not produce a score or a percentage anywhere. The score is computed
        from your classifications.
 
     Then write a short summary of the fit, naming the strongest evidence and

@@ -4,12 +4,65 @@
 <head>
     <meta charset="UTF-8">
     <style>
+        /* Every colour is a token, and only the tokens are redefined for dark
+           mode. A colour written straight into a rule is a colour that will be
+           wrong in one of the two themes. */
         :root {
             --accent: #0073b1;
             --accent-dark: #005682;
             --success: #1e7e34;
+            --warn: #b45309;
             --danger: #c9302c;
             --border: #dfe3e8;
+            --bg: #f6f7f9;
+            --surface: #ffffff;
+            --surface-alt: #eceff3;
+            --track: #e9ecef;
+            --text: #1f2328;
+            --muted: #6b7280;
+            --hairline: #f1f3f5;
+            --good-bg: #e6f4ea;
+            --good-fg: #1e7e34;
+            --mid-bg: #fff4e5;
+            --mid-fg: #92400e;
+            --low-bg: #fdecea;
+            --low-fg: #a02622;
+            --nudge-bg: #fff8e1;
+            --nudge-border: #ffe08a;
+            --term-bg: #eef3fb;
+            --term-border: #cfe0f5;
+            --term-fg: #1d4ed8;
+        }
+
+        /* Chrome renders the popup in the browser's theme, so the popup should
+           follow it. A white panel on a dark browser reads as a bug. */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --accent: #4aa3d8;
+                --accent-dark: #74bce8;
+                --success: #4ec97a;
+                --warn: #e0a458;
+                --danger: #f28b82;
+                --border: #30363d;
+                --bg: #14181d;
+                --surface: #1b1f24;
+                --surface-alt: #262c33;
+                --track: #30363d;
+                --text: #e6edf3;
+                --muted: #9aa4b0;
+                --hairline: #262c33;
+                --good-bg: #16301f;
+                --good-fg: #6ee7a0;
+                --mid-bg: #33260f;
+                --mid-fg: #f0c078;
+                --low-bg: #3a1d1c;
+                --low-fg: #ffa199;
+                --nudge-bg: #2b2410;
+                --nudge-border: #4d4020;
+                --term-bg: #16243a;
+                --term-border: #24405f;
+                --term-fg: #8ab4f8;
+            }
         }
 
         * { box-sizing: border-box; }
@@ -18,10 +71,10 @@
             width: 330px;
             margin: 0;
             padding: 14px;
-            background: #f6f7f9;
+            background: var(--bg);
             font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
             font-size: 13px;
-            color: #1f2328;
+            color: var(--text);
         }
 
         .header {
@@ -44,14 +97,24 @@
         .link:hover { text-decoration: underline; }
 
         .card {
-            background: #fff;
+            background: var(--surface);
             border: 1px solid var(--border);
             border-radius: 8px;
             padding: 10px;
             margin-bottom: 10px;
         }
 
-        .muted { color: #6b7280; font-size: 12px; }
+        .muted { color: var(--muted); font-size: 12px; }
+
+        /* What the posting says about itself — location and pay. Set apart from
+           the role because it is a fact from the page, not a guess. */
+        .job-facts {
+            font-size: 12px;
+            font-weight: 600;
+            margin-top: 5px;
+            padding-top: 5px;
+            border-top: 1px solid var(--hairline);
+        }
 
         label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; }
 
@@ -63,7 +126,8 @@
             border-radius: 6px;
             font-size: 13px;
             font-family: inherit;
-            background: #fff;
+            background: var(--surface);
+            color: var(--text);
         }
 
         input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
@@ -81,9 +145,9 @@
         .btn:disabled { opacity: 0.6; cursor: default; }
         .btn-primary { background: var(--accent); color: #fff; }
         .btn-primary:hover:not(:disabled) { background: var(--accent-dark); }
-        .btn-success { background: #28a745; color: #fff; }
-        .btn-success:hover:not(:disabled) { background: var(--success); }
-        .btn-ghost { background: transparent; color: #6b7280; font-weight: 500; }
+        .btn-success { background: var(--success); color: #fff; }
+        .btn-success:hover:not(:disabled) { filter: brightness(0.92); }
+        .btn-ghost { background: transparent; color: var(--muted); font-weight: 500; }
         .btn-ghost:hover { text-decoration: underline; }
 
         .tabs { display: flex; gap: 4px; margin-bottom: 10px; }
@@ -95,10 +159,32 @@
             cursor: pointer;
             font-weight: 600;
             font-size: 12px;
-            background: #eceff3;
-            color: #6b7280;
+            background: var(--surface-alt);
+            color: var(--muted);
         }
         .tab.active { background: var(--accent); color: #fff; }
+
+        /* A checkbox row, for settings that are on/off rather than typed. */
+        .switch {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            margin: 2px 0 10px;
+        }
+        .switch input {
+            width: auto;
+            margin: 2px 0 0;
+            flex: 0 0 auto;
+            accent-color: var(--accent);
+        }
+        .switch label {
+            margin: 0;
+            font-weight: 500;
+            font-size: 12px;
+            line-height: 1.4;
+            cursor: pointer;
+        }
+        .switch .muted { display: block; font-size: 11px; margin-top: 2px; }
 
         .account {
             display: flex;
@@ -136,8 +222,8 @@
         }
 
         .nudge {
-            background: #fff8e1;
-            border: 1px solid #ffe08a;
+            background: var(--nudge-bg);
+            border: 1px solid var(--nudge-border);
             border-radius: 6px;
             padding: 7px 9px;
             margin-bottom: 10px;
@@ -150,6 +236,163 @@
         .success-text { color: var(--success); font-weight: 600; }
         .score { font-size: 15px; font-weight: 700; }
         .hidden { display: none !important; }
+
+        /* --- Analysis result -------------------------------------------
+           A 330px popup cannot take running prose. Everything here exists to
+           make the result scannable: the numbers read at a glance, the gaps
+           are countable without being read, and the summary is one tap away
+           rather than in the way. */
+        .scores { display: flex; gap: 8px; margin-bottom: 4px; }
+        .score-card {
+            flex: 1;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 9px 6px;
+            text-align: center;
+        }
+
+        /* A dial rather than a bar, and the same dial the in-page card draws.
+           One number must not be a bar in one surface and a ring in the other —
+           consistency is what lets the two be read as the same measurement. */
+        .score-ring {
+            position: relative;
+            width: 58px;
+            height: 58px;
+            margin: 0 auto 2px;
+            border-radius: 50%;
+            background: conic-gradient(
+                var(--dial, var(--accent)) calc(var(--pct, 0) * 1%),
+                var(--track) 0
+            );
+            display: grid;
+            place-items: center;
+        }
+        .score-ring::after {
+            content: "";
+            position: absolute;
+            inset: 5px;
+            border-radius: 50%;
+            background: var(--surface);
+        }
+        .score-value {
+            position: relative;
+            font-size: 15px;
+            font-weight: 700;
+            line-height: 1.1;
+        }
+        .score-label {
+            font-size: 9.5px;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            margin-top: 3px;
+            font-weight: 600;
+        }
+        .score-sub { font-size: 10px; color: var(--muted); margin-top: 4px; line-height: 1.35; }
+
+        /* Banded so the number carries meaning before it is read. */
+        .score-good { color: var(--good-fg); --dial: var(--success); }
+        .score-mid  { color: var(--mid-fg);  --dial: var(--warn); }
+        .score-low  { color: var(--low-fg);  --dial: var(--danger); }
+
+        .verdict {
+            font-size: 11.5px;
+            font-weight: 600;
+            padding: 6px 9px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            line-height: 1.4;
+        }
+        /* A second, quieter line: a strong candidate being filtered out is a
+           different problem from a weak one, and should not look like the
+           same sentence. */
+        .verdict-note {
+            display: block;
+            font-weight: 500;
+            font-size: 10.5px;
+            opacity: 0.85;
+            margin-top: 2px;
+        }
+        .verdict-good { background: var(--good-bg); color: var(--good-fg); }
+        .verdict-mid  { background: var(--mid-bg);  color: var(--mid-fg); }
+        .verdict-low  { background: var(--low-bg);  color: var(--low-fg); }
+
+        /* Phrase-length gaps read better as a list than as pills. */
+        .gap-list { margin: 0; padding: 0; list-style: none; }
+        .gap-list li {
+            font-size: 11.5px;
+            line-height: 1.45;
+            color: var(--text);
+            padding: 3px 0 3px 14px;
+            position: relative;
+            border-bottom: 1px solid var(--hairline);
+        }
+        .gap-list li:last-child { border-bottom: none; }
+        .gap-list li::before {
+            content: "•";
+            position: absolute;
+            left: 2px;
+            color: var(--danger);
+            font-weight: 700;
+        }
+
+        .section-title { font-size: 11.5px; font-weight: 700; margin: 12px 0 1px; }
+        .section-hint {
+            font-size: 10.5px;
+            color: var(--muted);
+            line-height: 1.4;
+            margin: 0 0 6px;
+        }
+
+        .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+        .chip {
+            font-size: 10.5px;
+            line-height: 1.5;
+            padding: 1px 7px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--surface-alt);
+            color: var(--text);
+        }
+        /* Two different kinds of absence, so they must not look alike: a
+           requirement a person would probe, versus a string a filter greps. */
+        .chip-gap  { background: var(--low-bg); border-color: var(--low-fg); color: var(--low-fg); }
+        .chip-term { background: var(--term-bg); border-color: var(--term-border); color: var(--term-fg); }
+        .chip-more {
+            background: transparent;
+            border-style: dashed;
+            color: var(--muted);
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .chip-more:hover { color: var(--accent); border-color: var(--accent); }
+
+        .summary-box {
+            font-size: 11.5px;
+            line-height: 1.5;
+            color: var(--text);
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 7px 8px;
+            margin-top: 10px;
+        }
+        .summary-box.clamped {
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .summary-toggle {
+            font-size: 10.5px;
+            font-weight: 600;
+            color: var(--accent);
+            cursor: pointer;
+            margin-top: 3px;
+            display: inline-block;
+        }
+        .summary-toggle:hover { text-decoration: underline; }
     </style>
 </head>
 
@@ -240,6 +483,21 @@
     <!-- Server address, needed when the API is hosted rather than local -->
     <details id="settings-panel">
         <summary>⚙️ Settings</summary>
+
+        <!-- Outside the form: it applies immediately and has nothing to save.
+             Injecting into somebody else's page is the kind of thing that
+             should always have an off switch that is easy to find. -->
+        <div class="switch">
+            <input type="checkbox" id="setting-in-page-card" checked>
+            <label for="setting-in-page-card">
+                Show the match card on job pages
+                <span class="muted">
+                    Scores the posting against your resume as you open it. Free —
+                    keyword matching only, no AI call until you ask for one.
+                </span>
+            </label>
+        </div>
+
         <form id="settings-form">
             <label for="settings-api-url">API address</label>
             <input type="url" id="settings-api-url" placeholder="http://localhost:8000" required>
