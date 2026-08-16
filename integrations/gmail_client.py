@@ -262,6 +262,26 @@ def _save_credentials(user_id: int, creds) -> None:
     workspace.gmail_token_path(user_id).write_text(creds.to_json(), encoding="utf-8")
 
 
+def mailbox_address(user_id: int) -> str:
+    """The address of the mailbox being read, or "" if it cannot be determined.
+
+    Needed to keep the user out of their own contact fields. Their address is
+    in almost every recruiter email — in ``To``, in ``Cc``, and quoted in the
+    body as "we received your application from …" — so without knowing it, the
+    first address found in a message is as likely to be the user as the
+    recruiter.
+
+    Best-effort by design: a failure here means one fewer exclusion, not a
+    failed sync.
+    """
+    try:
+        service = authenticate_gmail(user_id, allow_interactive=False)
+        return service.users().getProfile(userId="me").execute().get("emailAddress", "")
+    except Exception as exc:  # noqa: BLE001 - advisory only
+        logger.info("Could not read the mailbox address for user %s: %s", user_id, exc)
+        return ""
+
+
 def is_high_probability_job_email(sender: str, subject: str, snippet: str) -> bool:
     """Cheap rule engine that filters out noise before paying for an AI call."""
     sender_lower = (sender or "").lower()
@@ -425,7 +445,8 @@ def fetch_job_emails(user_id: int, max_results: int = None) -> list[dict]:
     lets the tracker end on the latest state instead of the earliest.
 
     Each entry includes the Gmail ``id`` so the caller can skip messages it has
-    already classified.
+    already classified, and the ``Reply-To``, ``Cc`` and ``To`` headers, which
+    is where the human behind an ATS relay is usually named.
     """
     service = authenticate_gmail(user_id, allow_interactive=False)
     max_results = max_results or GMAIL_MAX_RESULTS
@@ -475,6 +496,15 @@ def fetch_job_emails(user_id: int, max_results: int = None) -> list[dict]:
                     {
                         "id": msg["id"],
                         "sender": sender,
+                        # An ATS sends as no-reply@vendor and sets Reply-To to
+                        # the recruiter who actually owns the requisition. It is
+                        # the single best "who do I answer?" signal in the
+                        # message, and was previously read and discarded.
+                        "reply_to": _header(headers, "Reply-To", ""),
+                        # Cc frequently carries the second recruiter on a thread
+                        # or the hiring manager being looped in.
+                        "cc": _header(headers, "Cc", ""),
+                        "to": _header(headers, "To", ""),
                         "subject": subject,
                         "snippet": snippet,
                         "body": body,
