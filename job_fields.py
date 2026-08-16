@@ -93,9 +93,47 @@ _MAIL_SUBDOMAINS = {
 
 MAX_FIELD_LENGTH = 200
 
+# A company name is a name, not a sentence.
+#
+# Wellfound renders its listing blurb inside the container the extension's
+# company selector matched, so an employer arrived as twenty words of marketing
+# copy. Real ones are short — "Saint-Gobain India Private Limited" is four.
+MAX_COMPANY_WORDS = 8
+
+# A job board is never the employer.
+#
+# `og:site_name` is the board naming *itself*, which is how the Indeed home page
+# — not a posting at all — was saved as an application at a company called
+# "Indeed". Checked here as well as in the extension for the usual reason: a
+# stale extension build, or any other client, must not be able to write a row
+# that no later email can match.
+#
+# Ambiguous single words a real employer might plausibly use — Shine, Dice,
+# Monster, Seek — are deliberately absent. Rejecting a genuine company is the
+# worse error.
+_JOB_BOARDS = {
+    "linkedin", "indeed", "naukri", "glassdoor", "ziprecruiter",
+    "wellfound", "angellist", "instahyre", "cutshort", "hirist",
+    "simplyhired", "careerbuilder", "internshala", "timesjobs",
+    "greenhouse", "lever", "workday", "smartrecruiters", "icims", "taleo",
+    "bamboohr", "ashby", "workable", "jobvite", "breezy", "recruitee",
+    "teamtailor", "successfactors", "hackerrank",
+}
+
+_BOARD_NOISE = re.compile(
+    r"\.(com|in|io|net|org|hr|co(\.[a-z]{2})?)\b|\b(jobs?|careers?|india|inc|ltd|limited)\b",
+    re.IGNORECASE,
+)
+
 
 class InvalidJobField(ValueError):
     """Raised when a company or role value is unusable."""
+
+
+def is_job_board(value: str) -> bool:
+    """True when a string names a job board or ATS rather than an employer."""
+    key = re.sub(r"[^a-z]", "", _BOARD_NOISE.sub("", str(value or "").lower()))
+    return key in _JOB_BOARDS
 
 
 def _words(value: str) -> list[str]:
@@ -171,6 +209,18 @@ def validate_company(company: str, role: str = "") -> str:
     if is_placeholder(cleaned):
         raise InvalidJobField(
             f"{cleaned!r} is a placeholder, not a company name."
+        )
+
+    if is_job_board(cleaned):
+        raise InvalidJobField(
+            f"{cleaned!r} is a job board, not the employer. "
+            "The page named itself rather than the company hiring."
+        )
+
+    if len(cleaned.split()) > MAX_COMPANY_WORDS:
+        raise InvalidJobField(
+            f"{cleaned!r} is {len(cleaned.split())} words long — that is listing "
+            "copy, not a company name."
         )
 
     # Checked before the equality test below: when the value is a job title,
