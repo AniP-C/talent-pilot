@@ -13,6 +13,7 @@ import streamlit.components.v1 as components
 import auth
 import autofill
 import db
+import posting
 import ui
 import utils
 import workspace
@@ -359,10 +360,17 @@ def run_sync(user: auth.User) -> None:
     try:
         summary = sync_inbox_to_db(user.id, progress_callback=status_box.write)
         status_box.update(label="Sync complete", state="complete", expanded=False)
-        st.sidebar.success(
+
+        line = (
             f"{summary['updated']} updated · {summary['created']} added · "
             f"{summary['skipped']} skipped"
         )
+        # Worth its own mention: a sync that moved no statuses can still be the
+        # run that found out who is handling an application.
+        if summary.get("contacts"):
+            line += f" · {summary['contacts']} contact(s) found"
+
+        st.sidebar.success(line)
         st.rerun()
     except Exception as exc:  # noqa: BLE001 - surfaced to the user
         logger.error("Inbox sync failed for user %s: %s", user.id, exc)
@@ -388,10 +396,10 @@ def render_dashboard(user: auth.User, db_path) -> None:
     frame = pd.DataFrame(jobs)
 
     # --- Filters --------------------------------------------------------
-    search_col, status_col = st.columns([2, 3])
+    search_col, status_col, remote_col = st.columns([2, 3, 1])
     with search_col:
         search = st.text_input(
-            "Search", placeholder="Company or role…", label_visibility="collapsed"
+            "Search", placeholder="Company, role or location…", label_visibility="collapsed"
         )
     with status_col:
         chosen = st.multiselect(
@@ -401,20 +409,62 @@ def render_dashboard(user: auth.User, db_path) -> None:
             placeholder="All statuses",
             label_visibility="collapsed",
         )
+    with remote_col:
+        remote_only = st.checkbox("Remote only")
 
     filtered = frame
     if search:
-        haystack = filtered["company"].fillna("") + " " + filtered["role"].fillna("")
+        # Location joins the haystack: "which of these were in Berlin?" is the
+        # same kind of question as "which were at Stripe?".
+        haystack = (
+            filtered["company"].fillna("")
+            + " " + filtered["role"].fillna("")
+            + " " + filtered["location"].fillna("")
+        )
         filtered = filtered[haystack.str.contains(search, case=False, na=False)]
     if chosen:
         filtered = filtered[filtered["status"].isin(chosen)]
+    if remote_only:
+        filtered = filtered[filtered["remote"].fillna(0).astype(int) == 1]
 
     if filtered.empty:
         st.warning("No applications match those filters.")
         return
 
-    display = filtered.assign(status=filtered["status"].map(ui.status_label))[
-        ["company", "role", "status", "date_applied", "source", "link"]
+    # Two stored facts rendered into one readable cell each. The columns stay
+    # structured so they can be filtered and compared; the formatting is a
+    # presentation decision and lives in posting.py, shared with the API.
+    #
+    # An absent value is spelled out rather than left blank — a blank cell reads
+    # as a field that failed rather than one the posting never stated, and the
+    # difference decides whether it is worth looking into. This also carries into
+    # the CSV the table's download button produces.
+    display = filtered.assign(
+        status=filtered["status"].map(ui.status_label),
+        where=filtered.apply(
+            lambda row: posting.format_location(row["location"], row["remote"])
+            or ui.NOT_STATED,
+            axis=1,
+        ),
+        pay=filtered.apply(
+            lambda row: posting.format_salary(
+                row["salary_min"], row["salary_max"],
+                row["salary_currency"], row["salary_period"],
+            )
+            or ui.NOT_STATED,
+            axis=1,
+        ),
+        # Which CV went out. Recorded on every application since the extension
+        # started saving them, and until now never shown anywhere — so the one
+        # question a second resume profile exists to answer had no answer.
+        resume=filtered["resume_used"].map(
+            lambda name: utils.profile_display_name(name) if name else ui.NOT_STATED
+        ),
+    )[
+        [
+            "company", "role", "status", "where", "pay",
+            "resume", "date_applied", "source", "link",
+        ]
     ]
 
     st.dataframe(
@@ -425,8 +475,15 @@ def render_dashboard(user: auth.User, db_path) -> None:
             "company": st.column_config.TextColumn("Company", width="medium"),
             "role": st.column_config.TextColumn("Role", width="large"),
             "status": st.column_config.TextColumn("Status", width="small"),
-            "date_applied": st.column_config.TextColumn("Applied", width="small"),
+            "where": st.column_config.TextColumn("Where", width="small"),
+            "pay": st.column_config.TextColumn("Pay", width="small"),
+            "resume": st.column_config.TextColumn("CV used", width="small"),
+            "date_applied": st.column_config.DateColumn(
+                "Applied", width="small", format="DD MMM YYYY"
+            ),
             "source": st.column_config.TextColumn("Source", width="small"),
+            # Rows the tracker only learned about by email have no posting URL
+            # unless one turned up in the message, so this is routinely blank.
             "link": st.column_config.LinkColumn("Posting", display_text="Open ↗"),
         },
     )
@@ -489,11 +546,9 @@ def render_followups(db_path) -> None:
 
                 st.caption(f"{ui.status_label(job['status'])} · {detail}")
 
-                if job.get("contact_email"):
-                    name = job.get("contact_name") or job["contact_email"]
-                    st.caption(
-                        f"↩️ Reply to [{name}](mailto:{job['contact_email']})"
-                    )
+                contact = ui.contact_line(job)
+                if contact:
+                    st.caption(contact)
 
             with action:
                 if job.get("link"):
@@ -530,14 +585,36 @@ def render_job_editor(jobs: list[dict], db_path) -> None:
             st.success("Status updated.")
             st.rerun()
 
-    # Who has actually been in touch. Captured by inbox sync from the sender of
-    # every email it classifies, which the tracker previously discarded — so
-    # "who do I reply to?" had no answer without going back to Gmail.
-    if current.get("contact_email"):
-        name = current.get("contact_name") or current["contact_email"]
+    # What the posting itself said. Read from its JSON-LD block when the
+    # extension saved it, so it is a declared fact rather than a scrape of prose.
+    #
+    # Always rendered, with NA where nothing was stated. The emoji label is what
+    # makes a bare "NA" mean something — it is answering a question the reader can
+    # see, rather than sitting in an unexplained blank.
+    where = posting.format_location(current.get("location"), current.get("remote"))
+    pay = posting.format_salary(
+        current.get("salary_min"), current.get("salary_max"),
+        current.get("salary_currency"), current.get("salary_period"),
+    )
+    resume = current.get("resume_used")
+    st.caption(
+        f"📍 {where or ui.NOT_STATED}  ·  💰 {pay or ui.NOT_STATED}"
+        f"  ·  📄 {utils.profile_display_name(resume) if resume else ui.NOT_STATED}"
+        f"  ·  🗓️ Applied {current.get('date_applied') or ui.NOT_STATED}"
+    )
+
+    if current.get("link"):
+        st.caption(f"🔗 [Open the posting]({current['link']})")
+
+    # Who has actually been in touch. Captured by inbox sync from the headers
+    # and signature of every email it classifies, all of which the tracker
+    # previously discarded — so "who do I reply to?" had no answer without
+    # going back to Gmail.
+    contact = ui.contact_line(current)
+    if contact:
         last_seen = (current.get("last_contact_at") or "")[:10]
         suffix = f" · last heard {last_seen}" if last_seen else ""
-        st.caption(f"↩️ Contact: [{name}](mailto:{current['contact_email']}){suffix}")
+        st.caption(f"{contact}{suffix}")
 
     render_timeline(job_id, db_path)
 
@@ -640,6 +717,29 @@ def render_add_form(db_path, profiles: list[str]) -> None:
                 else utils.profile_display_name(name),
             )
 
+        # Filled in automatically when the extension saves a job — the posting
+        # declares both. Here by hand, so a manually added row is not
+        # permanently missing the columns the dashboard shows.
+        place_col, remote_col = st.columns([3, 1])
+        with place_col:
+            location = st.text_input("Location", placeholder="e.g. Bengaluru, Karnataka")
+        with remote_col:
+            remote = st.checkbox("Remote", value=False)
+
+        pay_min, pay_max, pay_currency, pay_period = st.columns([2, 2, 1, 1])
+        with pay_min:
+            salary_min = st.number_input(
+                "Salary from", min_value=0, value=0, step=1000, format="%d"
+            )
+        with pay_max:
+            salary_max = st.number_input(
+                "Salary to", min_value=0, value=0, step=1000, format="%d"
+            )
+        with pay_currency:
+            salary_currency = st.text_input("Currency", placeholder="INR", max_chars=3)
+        with pay_period:
+            salary_period = st.selectbox("Per", ["", *posting.SALARY_PERIODS])
+
         link = st.text_input("Job posting link")
         jd = st.text_area("Job description", height=160)
         notes = st.text_area("Notes", height=80)
@@ -660,6 +760,13 @@ def render_add_form(db_path, profiles: list[str]) -> None:
             notes=notes,
             source=source,
             resume_used=None if resume_used == "None" else resume_used,
+            location=location,
+            remote=remote,
+            # 0 from a number_input means "not stated", which normalise_salary
+            # drops — the same path the extension's values take.
+            salary=posting.normalise_salary(
+                salary_min or None, salary_max or None, salary_currency, salary_period
+            ),
             db_path=db_path,
         )
         st.success(f"Added {company} — {role}.")
