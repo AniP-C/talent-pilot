@@ -1,0 +1,60 @@
+Staff AI Engineer
+London, United Kingdom
+
+Join us at Meridian Bank, where the problems are measured in billions.
+
+You will be required to have experience in LEDGER Consolidation. It is a
+multiyear initiative to bring the settlement platform onto supported hardware
+and retire redundant functionality. You will lead the overall engineering of
+this initiative and support discovery, delivery planning and roadmap.
+
+To be successful in this role, you should have experience with:
+
+Strong full-stack engineering using either Python or Java, including Python
+with FastAPI/Django or Java with Spring Boot, together with modern frontend
+technologies such as React, Angular or TypeScript.
+
+Hands-on delivery of Generative AI solutions, including LLM integration, prompt
+engineering, Retrieval-Augmented Generation, embeddings, vector databases and
+agentic AI workflows.
+
+Designing secure, scalable enterprise applications using microservices, REST
+APIs, event-driven architecture, relational or NoSQL databases, authentication
+and enterprise integration patterns.
+
+Cloud-native engineering and DevSecOps, including Docker, Kubernetes, CI/CD,
+automated testing, observability, resilience and production support.
+
+Some other highly valued skills may include:
+
+AI framework experience such as LangChain, LangGraph, LlamaIndex, Semantic
+Kernel or Spring AI.
+
+MLOps and LLMOps knowledge, including prompt and model versioning, automated
+evaluation, monitoring, guardrails and cost management.
+
+Financial services or payments engineering experience, with an understanding of
+responsible AI, data privacy and regulatory compliance.
+
+You may be assessed on the key critical skills relevant for success in role,
+such as risk and controls, change and transformation, business acumen strategic
+thinking and digital and technology, as well as job-specific technical skills.
+
+This role is based in our London office.
+
+What you'll get in return
+Competitive holiday allowance
+Life assurance
+Private medical care
+Pension contribution
+
+Our technology
+Kotlin C++ Spring GridGain Confluence F# Bitbucket Objective-C
+Microsoft SQL Server Kibana Scikit SonarQube OpenShift Hadoop Bokeh DB2
+Tableau Protocol buffers C# MongoDB
+
+This is Meridian London
+Our London campus is home to 9,000 colleagues across Operations and Technology.
+
+Working flexibly
+We are committed to providing a supportive and inclusive environment.

@@ -287,13 +287,34 @@ function renderAnalysis(result) {
         );
     }
 
+    if (coverage.thin) {
+        const caution = document.createElement("p");
+        caution.className = "section-hint";
+        caution.textContent =
+            "This posting does not state enough to score against — the percentage is not meaningful here.";
+        area.append(caution);
+    }
+
     const notScored = coverage.not_scored || [];
-    if (notScored.length) {
+    const internal = notScored.filter((entry) => entry.kind === "employer_internal");
+    const behavioural = notScored.filter((entry) => entry.kind === "meta");
+
+    if (internal.length) {
         area.append(
             buildSection(
-                `ℹ️ Internal to this employer (${notScored.length})`,
-                "Named by the posting, not counted for or against you.",
-                buildGapList(notScored.map((entry) => entry.skill))
+                `ℹ️ Internal to this employer (${internal.length})`,
+                "Nothing a resume can evidence from outside. Not counted either way.",
+                buildGapList(internal.map((entry) => entry.skill))
+            )
+        );
+    }
+
+    if (behavioural.length) {
+        area.append(
+            buildSection(
+                `🗣️ They will also assess (${behavioural.length})`,
+                "Competency wording, not skills. Not scored — worth reading before an interview.",
+                buildGapList(behavioural.map((entry) => entry.skill))
             )
         );
     }

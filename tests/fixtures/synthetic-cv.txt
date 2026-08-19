@@ -1,0 +1,33 @@
+Jordan Ellis
+AI Software Engineer | GenAI, Agentic AI & Backend Systems
+jordan.ellis@example.com | github.com/jordanellis-example
+
+Summary
+Applied AI engineer with 3 years building production GenAI, RAG and multi-agent
+systems in Python, FastAPI, LangChain and LangGraph. Delivers enterprise LLM
+applications end to end: retrieval, agent orchestration, evaluator-agent
+validation and deployment.
+
+Work Experience
+Applied AI Engineer, Northwind Consulting — Client: Aldercrest Pharma
+- Built a multi-agent Agentic AI system using LangGraph for automated
+  client-ready deck generation.
+- Designed domain-specialised agents with an evaluator ("judge") agent
+  validating outputs, cutting turnaround from weeks to days.
+- Engineered a RAG pipeline over enterprise knowledge sources.
+
+Applied AI Engineer & SRE, Northwind Consulting — Client: Halden Retail
+- Engineered an AI incident analysis system (RAG, FastAPI, LLMs) automating
+  root-cause analysis, cutting log triage from 2 hours to 15 minutes.
+- Built a multilingual GenAI retail assistant (FastAPI, Ollama).
+- Built a Python/SQL/Streamlit analytics platform over 1.5M records.
+
+Skills
+Languages: Python, SQL, R
+GenAI & LLM: Generative AI, LLMs, RAG, Agentic AI, Multi-Agent Orchestration,
+Evaluator/Judge Agents, Prompt Engineering, LLM Evaluation, Tool Calling
+Frameworks: LangChain, LangGraph, Ollama, Vector Search, Embeddings, PyTorch
+Backend & Cloud: FastAPI, REST APIs, Docker, Azure, Model Deployment
+
+Education
+B.Tech, Electrical Engineering

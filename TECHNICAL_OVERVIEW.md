@@ -76,6 +76,7 @@ flowchart LR
 |-- ui.py                   Dashboard styling and render helpers
 |-- auth.py                 Accounts, password hashing, recovery codes, API tokens
 |-- usage.py                Per-account metering: what was used, and what it cost
+|-- deploy/calibrate.py     Runs fixtures against the live model, prints the spread
 |-- workspace.py            Per-user paths and path-traversal defences
 |-- db.py                   Job storage (per workspace)
 |-- contacts.py             Recruiter contact selection (pure)

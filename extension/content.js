@@ -1777,6 +1777,16 @@
                     : "🔴 Weak fit — a stretch on the must-haves";
             body.append(verdict);
 
+            // A percentage over three requirements is arithmetic, not a
+            // measurement. Saying so beats presenting 33% as a judgement.
+            if (analysis.coverage?.thin) {
+                const caution = document.createElement("div");
+                caution.className = "tp-hint";
+                caution.textContent =
+                    "This posting does not state enough to score against — the percentage is not meaningful here.";
+                body.append(caution);
+            }
+
             if (analysis.missing_skills?.length) {
                 body.append(
                     cardSection(
@@ -1792,12 +1802,29 @@
             // something a resume can evidence or an applicant can go and
             // acquire. Naming it is still useful; calling it a gap was not.
             const notScored = analysis.coverage?.not_scored || [];
-            if (notScored.length) {
+            const internal = notScored.filter((e) => e.kind === "employer_internal");
+            const behavioural = notScored.filter((e) => e.kind === "meta");
+
+            if (internal.length) {
                 body.append(
                     cardSection(
-                        `ℹ️ Internal to this employer (${notScored.length})`,
-                        "Named by the posting, not counted for or against you.",
-                        cardGapList(notScored.map((entry) => entry.skill))
+                        `ℹ️ Internal to this employer (${internal.length})`,
+                        "Nothing a resume can evidence from outside. Not counted either way.",
+                        cardGapList(internal.map((entry) => entry.skill))
+                    )
+                );
+            }
+
+            // Competency wording — "business acumen", "risk and controls" —
+            // which every posting this employer writes carries verbatim and no
+            // resume is phrased in. Scoring it measured how little a CV reads
+            // like an HR framework.
+            if (behavioural.length) {
+                body.append(
+                    cardSection(
+                        `🗣️ They will also assess (${behavioural.length})`,
+                        "Competency wording, not skills. Not scored — worth reading before an interview.",
+                        cardGapList(behavioural.map((entry) => entry.skill))
                     )
                 );
             }

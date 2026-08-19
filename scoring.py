@@ -28,6 +28,9 @@ and "will an automated filter surface me at all?" are different questions:
 
 import re
 
+import posting
+from config import logger
+
 # A must-have carries four times the weight of a nice-to-have. Missing
 # "experience with FinTech, preferred" is not the same failure as missing the
 # programming language the job is written in, and scoring them alike was one of
@@ -64,11 +67,53 @@ META = "meta"                          # behavioural or process: "stakeholder ma
 
 VALID_KINDS = (SKILL, DOMAIN, EMPLOYER_INTERNAL, META)
 
-# Everything except the unwinnable. Domain experience stays in: it is a real
-# thing a candidate either has or does not, and hiding it would flatter the
-# score. Meta stays in for the same reason — vague is not the same as
-# impossible.
-SCOREABLE_KINDS = (SKILL, DOMAIN, META)
+# Domain experience stays in: it is a real thing a candidate either has or does
+# not, and hiding it would flatter the score.
+#
+# Meta was in, on the reasoning that vague is not the same as impossible. One
+# real advert settled it. Barclays closes every posting with "you may be
+# assessed on the key critical skills relevant for success in role, such as
+# risk and controls, change and transformation, business acumen strategic
+# thinking and digital and technology" — five requirements, on every job they
+# advertise, and the model marked all five absent, along with "secure coding
+# practices" and "effective unit testing practices". Seven of the twelve
+# must-haves were phrases no resume contains, so the score was measuring how
+# little a CV reads like an HR competency framework.
+#
+# A category that comes back absent for everybody is not a measurement, it is a
+# constant. These are reported instead as what the employer says it will also
+# assess, which is what they are actually useful for.
+SCOREABLE_KINDS = (SKILL, DOMAIN)
+
+# Below this many scoreable requirements, a percentage is arithmetic over
+# almost no evidence and should not be presented as a measurement.
+MIN_MEANINGFUL_REQUIREMENTS = 4
+
+# And below this many recognised technical terms, the *posting* has not said
+# enough to be scored against, whatever the model returned for it.
+#
+# This guard is deterministic on purpose, because the failure it catches is the
+# model's. Handed four sentences of culture — "you'll work across the stack,
+# wear many hats" — it read the requirements off the *resume* instead, marked
+# all twenty-two demonstrated, and returned 100%. Telling somebody they are a
+# perfect match for a posting that asked for nothing is the most misleading
+# output this tool can produce, and a rule in the prompt only mostly stops it.
+MIN_TERMS_IN_POSTING = 3
+
+
+def terms_named(jd_text: str) -> int:
+    """How many recognised technical terms a posting actually names.
+
+    Nothing to do with any resume — this measures the posting alone, which is
+    what makes it usable as a check on whatever the model came back with.
+    """
+    jd = _normalise(posting.trim_to_description(jd_text or ""))
+
+    return sum(
+        1
+        for spellings in SKILL_VOCABULARY.values()
+        if any(_mentions(jd, spelling) for spelling in spellings)
+    )
 
 
 # =====================================================================
@@ -83,11 +128,11 @@ def score_requirements(requirements: list[dict]) -> dict:
     When a job states only must-haves — which is common — the required side
     takes the whole weight instead of capping the achievable score at 80.
 
-    Requirements naming the employer's own systems are set aside rather than
-    scored — see EMPLOYER_INTERNAL. They are returned in ``not_scored`` so the
-    UI can still show them: "this job also wants X, and no outsider has it" is
-    useful context, and silently dropping a stated requirement would be its own
-    kind of dishonesty.
+    Requirements naming the employer's own systems, and the competency-framework
+    phrases every corporate posting closes with, are set aside rather than
+    scored — see SCOREABLE_KINDS. They are returned in ``not_scored`` so the UI
+    can still show them: "they will also assess X" is useful, and silently
+    dropping a stated requirement would be its own kind of dishonesty.
     """
     scoreable = [
         r for r in requirements if r.get("kind", SKILL) in SCOREABLE_KINDS
@@ -122,6 +167,7 @@ def score_requirements(requirements: list[dict]) -> dict:
             "preferred_total": 0,
             "preferred_met": 0.0,
             "not_scored": not_scored,
+            "thin": True,
         }
 
     return {
@@ -133,6 +179,12 @@ def score_requirements(requirements: list[dict]) -> dict:
         "preferred_met": round(preferred_ratio * len(preferred), 1),
         # Stated by the job, deliberately kept out of the arithmetic.
         "not_scored": not_scored,
+        # Half a dozen requirements can carry a percentage. Two cannot: one
+        # missing requirement out of two is 50%, and it reads as a considered
+        # judgement rather than as arithmetic over almost no evidence. Plenty of
+        # postings are three lines of culture and a "get in touch", and the
+        # honest answer there is that there is not enough to score.
+        "thin": len(scoreable) < MIN_MEANINGFUL_REQUIREMENTS,
     }
 
 
@@ -235,6 +287,9 @@ SKILL_VOCABULARY: dict[str, list[str]] = {
     "Bash": ["bash", "shell scripting"],
 
     # --- AI / ML ---
+    # Found by unknown_terms() on its first run against a real posting, which
+    # is exactly the job that function exists to do.
+    "Generative AI": ["generative ai", "genai", "gen ai"],
     "LLM": ["llm", "llms", "large language model", "large language models"],
     "RAG": ["rag", "retrieval augmented generation", "retrieval-augmented generation"],
     "Prompt Engineering": ["prompt engineering", "prompting"],
@@ -519,7 +574,11 @@ def keyword_coverage(jd_text: str, resume_text: str) -> dict:
     and reporting one both understates the candidate and sends them off to add
     a language the employer never asked them for.
     """
-    jd = _normalise(jd_text)
+    # The page, minus the careers-page furniture that follows the job. A
+    # marketing word cloud of every technology the employer uses anywhere put
+    # C++, C# and Kotlin into one candidate's "terms this posting uses that you
+    # lack", for a role that asks for none of them.
+    jd = _normalise(posting.trim_to_description(jd_text))
     resume = _normalise(resume_text)
 
     present = {
@@ -558,3 +617,177 @@ def keyword_coverage(jd_text: str, resume_text: str) -> dict:
         "missing": missing,
         "total": total,
     }
+
+
+# =====================================================================
+# WHAT THE VOCABULARY HAS NEVER HEARD OF
+# =====================================================================
+# A term absent from SKILL_VOCABULARY is invisible: the posting can ask for it,
+# the resume can be built on it, and neither number moves. That is a defensible
+# trade only while somebody notices the misses — and nothing reported them, so
+# LangGraph sat missing for as long as it took a person to read a bad result
+# and go digging.
+#
+# This is the noticing. It cannot know what is a technology, so it does not
+# guess: it reports capitalised or symbol-bearing tokens the vocabulary does
+# not cover, and a human decides which are worth adding.
+
+# Words that are capitalised for grammar rather than because they are products.
+_NOT_A_TECHNOLOGY = {
+    "the", "this", "that", "these", "those", "you", "your", "we", "our", "us",
+    "it", "its", "they", "their", "as", "and", "or", "but", "if", "for", "with",
+    "will", "would", "should", "can", "may", "must", "have", "has", "are", "is",
+    "be", "been", "role", "roles", "job", "jobs", "team", "teams", "work",
+    "working", "experience", "experienced", "skills", "skill", "years", "year",
+    "join", "apply", "applying", "please", "about", "purpose", "location",
+    "responsibilities", "requirements", "qualifications", "benefits", "salary",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "january", "february", "march", "april", "june", "july", "august",
+    "september", "october", "november", "december",
+    "engineer", "engineering", "developer", "development", "manager", "senior",
+    "junior", "lead", "principal", "staff", "director", "head", "vice",
+    "president", "officer", "analyst", "specialist", "consultant", "architect",
+    "hybrid", "remote", "onsite", "office", "full", "part", "time", "permanent",
+    "contract", "internship", "graduate", "candidate", "candidates", "applicant",
+}
+
+# A technology token: capitalised, or carrying the punctuation that marks a
+# product name. Two characters minimum, because initials are noise.
+_CANDIDATE_TERM_RE = re.compile(r"\b[A-Za-z][\w.+#/-]{1,24}\b")
+
+# Requisition numbers and other per-advert reference codes.
+_REFERENCE_CODE_RE = re.compile(r"^[a-z]{1,4}[-_]?\d{3,}$")
+
+
+def unknown_terms(jd_text: str, limit: int = 25) -> list[str]:
+    """Terms a posting uses that the vocabulary cannot see, most frequent first.
+
+    Reported rather than acted on. Adding to the vocabulary is a judgement —
+    "Titans" and "Volta" are real words in one Barclays page and neither is a
+    skill anybody hires for — so this produces a list to review, not a change.
+    """
+    text = posting.trim_to_description(jd_text or "")
+    lowered = _normalise(text)
+
+    covered = {
+        spelling
+        for spellings in SKILL_VOCABULARY.values()
+        for spelling in spellings
+    }
+
+    counts: dict[str, int] = {}
+
+    for match in _CANDIDATE_TERM_RE.finditer(text):
+        token = match.group(0)
+        key = token.lower().strip(".")
+
+        if key in _NOT_A_TECHNOLOGY or key in covered or len(key) < 2:
+            continue
+
+        # A requisition number is capitalised, unique to one advert, and never
+        # a skill: JR-0000111867.
+        if _REFERENCE_CODE_RE.match(key):
+            continue
+
+        # "FastAPI/Django" is two terms the vocabulary already knows, joined by
+        # the posting's own punctuation — not something nobody has heard of.
+        parts = [part for part in re.split(r"[/+]", key) if part]
+        if len(parts) > 1 and all(part in covered for part in parts):
+            continue
+
+        # Capitalised mid-sentence, or carrying product punctuation. A word at
+        # the start of a sentence is capitalised by grammar alone, so it only
+        # qualifies on the punctuation test.
+        starts_sentence = match.start() == 0 or text[match.start() - 1] in ".!?\n"
+        looks_technical = any(ch in token for ch in "+#/.") or (
+            token[0].isupper() and not starts_sentence
+        )
+
+        if not looks_technical:
+            continue
+
+        # Already matched by a multi-word vocabulary entry, e.g. "Semantic" in
+        # "Semantic Kernel", which is covered and should not be reported.
+        if any(spelling in lowered and key in spelling for spelling in covered):
+            continue
+
+        counts[token] = counts.get(token, 0) + 1
+
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return [term for term, _ in ordered[:limit]]
+
+
+def drop_alternatives_already_met(
+    requirements: list[dict], jd_text: str, resume_text: str
+) -> list[dict]:
+    """Remove requirements the posting offered as one option among several,
+    where the resume has one of the others.
+
+    The keyword pass groups alternatives deterministically. The requirement
+    pass asks the model to, and the model mostly does — but "either Python or
+    Java" came back as a separate absent "Java" on one run in three, and one
+    run in three is enough to tell somebody to go and learn a language the
+    employer explicitly did not ask them for.
+
+    Deliberately narrow. A requirement is only dropped when the posting itself
+    put it in an alternation, the resume satisfies another member of that same
+    alternation, and the entry is marked absent. Anything else is left exactly
+    as the model classified it.
+    """
+    if not requirements or not resume_text:
+        return requirements
+
+    jd = _normalise(posting.trim_to_description(jd_text or ""))
+    resume = _normalise(resume_text)
+
+    present = {
+        canonical: spellings
+        for canonical, spellings in SKILL_VOCABULARY.items()
+        if any(_mentions(jd, spelling) for spelling in spellings)
+    }
+
+    # Every spelling of every term that is one option in a group the resume
+    # already satisfies through a different option.
+    covered_elsewhere: set[str] = set()
+
+    for group in _alternation_groups(jd, present):
+        if len(group) < 2:
+            continue
+
+        met = [
+            canonical
+            for canonical in group
+            if any(_mentions(resume, spelling) for spelling in present[canonical])
+        ]
+
+        if not met:
+            continue
+
+        for canonical in group:
+            if canonical in met:
+                continue
+            covered_elsewhere.add(canonical.casefold())
+            covered_elsewhere.update(
+                spelling.casefold() for spelling in present[canonical]
+            )
+
+    if not covered_elsewhere:
+        return requirements
+
+    kept = []
+
+    for entry in requirements:
+        skill = entry.get("skill", "").strip().casefold()
+
+        # Only an exact naming of the alternative. "Java" goes; "Java-based
+        # event streaming" is its own requirement and stays.
+        if entry.get("status") == "absent" and skill in covered_elsewhere:
+            logger.debug(
+                "Dropped %r: the posting offered it as an alternative the resume meets",
+                entry.get("skill"),
+            )
+            continue
+
+        kept.append(entry)
+
+    return kept

@@ -220,6 +220,83 @@ the user gets now is the same headline order of magnitude built out of true
 statements — and, more usefully, a "missing" list they can act on without being
 sent to learn Java.
 
+### 1.7 Seven of twelve must-haves were HR wording
+
+Found on the second real run, after 1.2 shipped. The classifier was right — it
+marked them `meta` — and the *scoring* decision was wrong: `meta` was left in
+the denominator on the reasoning that "vague is not the same as impossible".
+
+Barclays closes every advert with the same paragraph:
+
+> You may be assessed on the key critical skills relevant for success in role,
+> such as risk and controls, change and transformation, business acumen
+> strategic thinking and digital and technology.
+
+Five requirements, on every job that employer advertises, plus "secure coding
+practices", "effective unit testing practices" and "Barclays Values". All
+absent, for every candidate, forever — no resume is written in competency
+wording. **A category that comes back absent for everybody is not a
+measurement, it is a constant.**
+
+**Now fixed.** `meta` joins `employer_internal` outside `SCOREABLE_KINDS`, and
+is reported separately as "they will also assess" — which is what it is
+actually good for. Domain experience stays scored: a candidate either has
+payments experience or does not.
+
+### 1.8 The page is not the job
+
+The extension captures the careers page, and a corporate careers page is mostly
+not the job. Barclays' ends with a holiday allowance, a pension contribution, a
+campus write-up, and a word cloud of every technology the bank uses anywhere:
+
+```
+Kotlin C++ Spring GridGain Confluence F# Kubernetes Bitbucket
+Amazon Web Services Microsoft SQL server Kibana Scikit Objective-C
+SonarQube OpenShift Java Hadoop Bokeh DB2 Tableau Protocol buffers C# MongoDB
+```
+
+That put **C++, C#, Kotlin and MongoDB** into the candidate's "terms a filter
+looks for and your resume lacks", for a role asking for none of them — and it
+was charged for as prompt tokens on every analysis.
+
+**Now fixed.** `posting.trim_to_description` cuts at the first furniture
+heading occurring past a third of the way in. Conservative on purpose: the
+marker must start its own line and be short enough to be a heading, so a page
+that opens with "About us" and then describes the job is never truncated. An
+ordinary ATS posting has no such heading and is untouched.
+
+**And now visible.** Every analysis writes what it received to `captures/` in
+the workspace — the raw capture, the trimmed version, and both lengths. The
+first question about a surprising score is "is the score wrong, or did the page
+not read properly?", and until this existed it could only be guessed at.
+
+### 1.9 Nothing set the temperature
+
+The one that mattered most, found last, by building the thing that could see
+it. Every structured call in this codebase ran at the API's default sampling
+temperature of 1.0 — including the one that reads a posting and decides what it
+requires.
+
+Measured with `deploy/calibrate.py`, three runs of one fixture, identical input
+every time:
+
+| | before | after `temperature=0` |
+| - | - | - |
+| requirements extracted | 10–42 (sd 13.1) | 32–32 (**sd 0**) |
+| must-haves | 5–25 (sd 8.4) | 23–23 (**sd 0**) |
+| score | 45–52 | 52–52 (**sd 0**) |
+
+Every swing chased through 1.1 — 12 must-haves one run, 26 the next, 27 the
+third — was substantially this. Classification is not creative writing: which
+requirements a posting states has a right answer, and the same input should
+produce it twice. `CLASSIFICATION_TEMPERATURE = 0.0` is now the default for
+every structured call; answer drafting, the one call that genuinely wants
+variety, opts into 0.7.
+
+The lesson is not "set the temperature". It is that this was invisible for the
+entire life of the feature, and became obvious within minutes of having
+something that ran the same input twice and printed the spread.
+
 ### 1.6 The prose contradicts the number
 
 The summary opens "The candidate is a **strong fit**". The headline says 60%

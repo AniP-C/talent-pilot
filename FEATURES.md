@@ -299,9 +299,46 @@ then appeared under "gaps a recruiter would probe" as something to go and fix.
 
 Those requirements are kept out of the arithmetic and out of the gap list, and
 still shown — labelled as internal to that employer. The posting did say it;
-silently dropping a stated requirement would be its own dishonesty. Industry
-and ways-of-working requirements are *not* excluded: vague is not the same as
-impossible, and hiding them would flatter the score.
+silently dropping a stated requirement would be its own dishonesty.
+
+**Competency wording is not scored either.** Barclays closes every advert with
+"you may be assessed on the key critical skills relevant for success in role,
+such as risk and controls, change and transformation, business acumen strategic
+thinking and digital and technology". Those five came back as must-haves, all
+absent, on top of "secure coding practices" and "effective unit testing
+practices" — seven of twelve must-haves were phrases no resume contains, so the
+score was measuring how little a CV reads like an HR competency framework. A
+category that is absent for everybody is not a measurement. They are reported
+under **They will also assess**, which is what they are genuinely useful for:
+interview preparation.
+
+Industry experience *is* still scored: a candidate either has payments
+experience or does not, and hiding that would flatter the score.
+
+**The page is not the job.** What the extension captures is a whole careers
+page, and a corporate one carries a holiday allowance, a campus write-up and a
+word cloud of every technology the employer uses anywhere after the description
+ends. Barclays' put C++, C#, Kotlin and MongoDB into one candidate's list of
+terms a filter would screen them out for, on a role that asks for none of them.
+The description is trimmed at the first furniture heading past a third of the
+way in — conservative on purpose, so a page that opens with "About us" is never
+truncated to nothing. An ordinary ATS posting has no such heading and is left
+alone.
+
+**You can see exactly what was analysed.** Every analysis writes the captured
+description to `captures/` in your workspace: what the page gave, what survived
+trimming, and how many characters each was. "Is the score wrong, or did the
+page not read properly?" is the first question about any surprising result, and
+it used to be unanswerable — the dashboard now shows it under **What was
+analysed**, and the last 25 are kept.
+
+**The same posting scores the same twice.** Every classification call runs at
+temperature 0. Reading a posting and deciding what it requires has a right
+answer, unlike drafting an application answer — which is the one call that
+still asks for variety. Before this, the same advert scored against the same
+resume produced between 10 and 42 requirements depending on the run, so the
+headline was substantially reporting how the model felt that second.
+`deploy/calibrate.py` measures it: three runs per fixture, printing the spread.
 
 **Why it works this way.** A language model asked for a percentage with no
 rubric returns a number reflecting its disposition rather than the evidence.

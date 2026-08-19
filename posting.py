@@ -330,3 +330,86 @@ def format_location(location: str = "", remote=False) -> str:
         parts.append(place)
 
     return " · ".join(parts)
+
+
+# =====================================================================
+# TRIMMING A CAREERS PAGE DOWN TO THE JOB
+# =====================================================================
+# What the extension captures is the page, and a corporate careers page is
+# mostly not the job. Barclays' advert ends with a holiday allowance, a pension
+# contribution, a word cloud of every technology the bank uses anywhere
+# — Kotlin, C++, F#, Objective-C, DB2, Hadoop — and several paragraphs about
+# the Pune campus.
+#
+# That tail is not harmless. The word cloud put C++, C#, Kotlin and MongoDB
+# into one candidate's "terms a filter looks for and your resume lacks", for a
+# role that asks for none of them, and it is charged for on every analysis as
+# prompt tokens.
+#
+# Cutting at a heading is deliberately conservative: the marker must start its
+# own line, and must appear beyond a third of the way in, so a page that opens
+# with "About us" and then describes the job is never truncated to nothing.
+_DESCRIPTION_END_MARKERS = (
+    "what you'll get in return",
+    "what you will get in return",
+    "our technology",
+    "our purpose",
+    "who succeeds",
+    "working flexibly",
+    "flexible working",
+    "life at",
+    "about us",
+    "about the company",
+    "about barclays",
+    "equal opportunit",
+    "we are an equal",
+    "diversity and inclusion",
+    "diversity, equity",
+    "reasonable adjustment",
+    "right to work",
+    "share job",
+    "apply for job",
+    "application process",
+    "benefits and perks",
+    "perks and benefits",
+    "our benefits",
+)
+
+# Never cut before this much of the text has been seen.
+_MIN_DESCRIPTION_FRACTION = 0.33
+
+# A heading is short. A sentence that happens to begin "about us, we think…"
+# is not one, and cutting there would throw away the rest of a real posting.
+_MAX_HEADING_CHARS = 60
+
+
+def trim_to_description(text: str) -> str:
+    """Drop the careers-page furniture that follows a job description.
+
+    Returns the text unchanged when no heading is recognised, which is the
+    common case for an ordinary ATS posting — those are the description and
+    nothing else.
+    """
+    text = text or ""
+
+    if not text.strip():
+        return text
+
+    threshold = len(text) * _MIN_DESCRIPTION_FRACTION
+    offset = 0
+
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip().lower()
+
+        if (
+            offset >= threshold
+            and len(stripped) <= _MAX_HEADING_CHARS
+            and any(stripped.startswith(marker) for marker in _DESCRIPTION_END_MARKERS)
+        ):
+            trimmed = text[:offset].rstrip()
+            # Only accept the cut if something substantial survives it.
+            return trimmed if trimmed else text
+
+        offset += len(line)
+
+    return text

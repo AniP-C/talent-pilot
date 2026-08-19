@@ -650,6 +650,19 @@ def analyze_job(job: JobData, user: auth.User = Depends(current_user)) -> dict:
     """Score the signed-in user's resume against a job description."""
     profile = _validated_profile(user.id, job.profile)
     resume = utils.load_profile(user.id, profile)
+
+    # Kept before the call, not after, so a description that made the model
+    # fail is still on disk to look at.
+    utils.save_jd_capture(
+        user.id,
+        job.jd_text,
+        company=job.company,
+        role=job.role,
+        source="extension",
+        trimmed_text=posting.trim_to_description(job.jd_text),
+        unknown_terms=tuple(scoring.unknown_terms(job.jd_text)),
+    )
+
     analysis = analyze_jd(
         job.jd_text, json.dumps(resume), utils.load_profile_text(user.id, profile)
     )

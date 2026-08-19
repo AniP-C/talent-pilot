@@ -60,7 +60,32 @@ def handle_api_exception(exception_obj: Exception, context_tag: str) -> dict:
     }
 
 
-def generate_structured(prompt: str, schema: type[BaseModel], context_tag: str) -> dict:
+# Classification is not creative writing.
+#
+# Every structured call in this codebase asks the model to read a document and
+# say what is in it — which requirements a posting states, which category an
+# email falls into, what a resume's sections are. Those have a right answer,
+# and the same input should produce it twice.
+#
+# Left unset, this ran at the API default of 1.0. The same advert, scored three
+# times against the same resume, came back with 10, 37 and 42 requirements —
+# so the headline percentage was substantially reporting how the model felt
+# about splitting bullets that second. Measured with deploy/calibrate.py, which
+# exists because this was invisible until somebody ran the same input twice.
+CLASSIFICATION_TEMPERATURE = 0.0
+
+# Drafting an application answer is the one call that genuinely wants variety:
+# the same question asked twice should not return the same sentence, and there
+# is no correct answer to converge on.
+DRAFTING_TEMPERATURE = 0.7
+
+
+def generate_structured(
+    prompt: str,
+    schema: type[BaseModel],
+    context_tag: str,
+    temperature: float = CLASSIFICATION_TEMPERATURE,
+) -> dict:
     """Run a structured-output call, returning parsed JSON or an error dict."""
     try:
         response = get_client().models.generate_content(
@@ -69,6 +94,7 @@ def generate_structured(prompt: str, schema: type[BaseModel], context_tag: str) 
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=schema,
+                temperature=temperature,
             ),
         )
         return json.loads(response.text or "{}")

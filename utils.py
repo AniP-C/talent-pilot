@@ -209,6 +209,111 @@ def delete_profile(user_id: int, filename: str) -> bool:
     return True
 
 
+# How many captures to keep per user. Enough to look back over a session's
+# worth of analyses, few enough that a workspace does not fill with job adverts.
+MAX_CAPTURES = 25
+
+
+def save_jd_capture(
+    user_id: int,
+    jd_text: str,
+    *,
+    company: str = "",
+    role: str = "",
+    source: str = "dashboard",
+    trimmed_text: str = "",
+    unknown_terms: tuple = (),
+) -> str:
+    """Record the job description an analysis actually ran on. Returns the name.
+
+    Both versions are kept: what arrived from the page, and what survived
+    trimming. The difference is the whole diagnosis when a posting scores
+    strangely — a page that captured half a job description and a page that
+    captured the entire careers site look identical in a percentage and nothing
+    alike here.
+
+    Best-effort, like every other piece of bookkeeping: an analysis the user
+    paid for must not fail because a diagnostic file could not be written.
+    """
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    label = workspace.sanitize_filename(f"{company}-{role}".strip("-") or "posting")
+    name = f"{stamp}-{label[:40]}.txt"
+
+    trimmed_text = trimmed_text or jd_text
+    header = [
+        f"captured  : {datetime.now().isoformat(timespec='seconds')}",
+        f"company   : {company or 'not stated'}",
+        f"role      : {role or 'not stated'}",
+        f"source    : {source}",
+        f"characters: {len(jd_text)} captured, {len(trimmed_text)} after trimming"
+        + ("" if len(trimmed_text) == len(jd_text) else "  (careers-page furniture removed)"),
+        "",
+    ]
+
+    # The vocabulary cannot see a term it does not hold, and nothing used to
+    # report the misses — LangGraph sat missing until somebody read a bad
+    # result and went looking. These are candidates for review, not a verdict:
+    # a page's proper nouns land here too.
+    if unknown_terms:
+        header += [
+            "terms the keyword vocabulary does not hold (review, do not assume):",
+            "  " + ", ".join(unknown_terms),
+            "",
+        ]
+
+    header += [
+        "=" * 70,
+        "WHAT THE PAGE GAVE US",
+        "=" * 70,
+        jd_text,
+    ]
+
+    if len(trimmed_text) != len(jd_text):
+        header += [
+            "",
+            "=" * 70,
+            "WHAT WAS SCORED AND SENT TO THE MODEL",
+            "=" * 70,
+            trimmed_text,
+        ]
+
+    try:
+        directory = workspace.captures_dir(user_id)
+        (directory / name).write_text("\n".join(header), encoding="utf-8")
+
+        # Oldest first, so the newest MAX_CAPTURES survive.
+        existing = sorted(directory.glob("*.txt"), key=lambda p: p.name)
+        for stale in existing[:-MAX_CAPTURES]:
+            stale.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.error("Could not store the analysed description: %s", exc)
+        return ""
+
+    return name
+
+
+def list_jd_captures(user_id: int, limit: int = 10) -> list[dict]:
+    """Recent captures, newest first: name, header lines, and the full text."""
+    try:
+        files = sorted(
+            workspace.captures_dir(user_id).glob("*.txt"),
+            key=lambda p: p.name,
+            reverse=True,
+        )[:limit]
+    except OSError:
+        return []
+
+    captures = []
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        captures.append({"name": path.name, "text": text})
+
+    return captures
+
+
 def update_last_sync(user_id: int) -> None:
     """Record that an inbox sync just finished."""
     path = workspace.last_sync_path(user_id)

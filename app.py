@@ -955,6 +955,16 @@ def render_analyzer(user: auth.User, db_path, selected_profile: str | None) -> N
     resume = utils.load_profile(user.id, selected_profile)
     resume_text = utils.load_profile_text(user.id, selected_profile)
 
+    utils.save_jd_capture(
+        user.id,
+        job["jd"],
+        company=job["company"],
+        role=job["role"],
+        source="dashboard",
+        trimmed_text=posting.trim_to_description(job["jd"]),
+        unknown_terms=tuple(scoring.unknown_terms(job["jd"])),
+    )
+
     with st.spinner("Gemini is comparing the job description to your resume…"):
         result = cached_analysis(job["jd"], json.dumps(resume), resume_text)
 
@@ -978,8 +988,17 @@ def render_analyzer(user: auth.User, db_path, selected_profile: str | None) -> N
     # transfers to AWS.
     fit_col, ats_col, summary_col = st.columns([1, 1, 3])
     with fit_col:
-        st.metric("Recruiter fit", f"{result['match_percentage']}%")
-        if coverage.get("required_total"):
+        # A posting that states nothing concrete gets no percentage. Handed
+        # four sentences of culture, the model read the requirements off the
+        # resume and returned 100% — and a confident number is worse than no
+        # number, because it is acted on.
+        if coverage.get("thin"):
+            st.metric("Recruiter fit", "—")
+            st.caption("Too little stated to score")
+        else:
+            st.metric("Recruiter fit", f"{result['match_percentage']}%")
+
+        if coverage.get("required_total") and not coverage.get("thin"):
             st.caption(
                 f"{coverage['required_met']:g}/{coverage['required_total']} must-haves"
                 + (
@@ -997,6 +1016,19 @@ def render_analyzer(user: auth.User, db_path, selected_profile: str | None) -> N
             st.caption("No known terms found in this posting")
     with summary_col:
         st.info(result["summary"])
+
+    # A percentage over three requirements is arithmetic, not a measurement.
+    # Plenty of postings are a paragraph of culture and a "get in touch", and
+    # saying so is a better answer than 33%.
+    if coverage.get("thin"):
+        st.warning(
+            "**This posting does not state enough to score against.** It names "
+            "very few concrete requirements, so any percentage would be "
+            "arithmetic over almost nothing — and a model handed a vague "
+            "posting tends to reflect your own resume back as its requirements. "
+            "The requirement list and the **What was analysed** panel below are "
+            "still worth reading; the number is not."
+        )
 
     # The requirement table is the score's working. A percentage nobody can
     # take apart is the thing this replaced.
@@ -1048,17 +1080,48 @@ def render_analyzer(user: auth.User, db_path, selected_profile: str | None) -> N
             for skill in result["missing_skills"] or ["—"]:
                 st.markdown(f"- {skill}")
 
-    # Shown, and shown apart, whether or not anything else scored. A posting
-    # that opens "you must have experience in SOLD Simplification" is naming
-    # its own internal programme: nobody applying from outside has it, no edit
-    # to a resume can produce it, and scoring it cost one real candidate
-    # sixteen points and then told them it was a gap to close. Dropping it
-    # silently would be its own dishonesty — the job did say it.
-    for entry in coverage.get("not_scored") or []:
+    # Shown, and shown apart, whether or not anything else scored. Two reasons
+    # a stated requirement is not counted, and they are not the same reason, so
+    # they are not shown together.
+    not_scored = coverage.get("not_scored") or []
+    internal = [r for r in not_scored if r["kind"] == scoring.EMPLOYER_INTERNAL]
+    behavioural = [r for r in not_scored if r["kind"] == scoring.META]
+
+    if internal:
+        st.markdown("**Internal to this employer**")
         st.caption(
-            f"ℹ️ **{entry['skill']}** looks like something internal to this "
-            "employer, so it is not counted for or against you."
+            "Named by the posting, and not something any resume can evidence "
+            "from outside — so it is not counted for or against you."
         )
+        st.markdown(" · ".join(f"`{r['skill']}`" for r in internal))
+
+    if behavioural:
+        st.markdown("**They say they will also assess**")
+        st.caption(
+            "Competency wording rather than skills — the same paragraph appears "
+            "on every posting this employer writes, and no resume is phrased in "
+            "it. Not scored; worth reading before an interview."
+        )
+        st.markdown(" · ".join(f"`{r['skill']}`" for r in behavioural))
+
+    # What the score was actually computed from. "Is the score wrong, or did
+    # the page not read properly?" is the first question about any surprising
+    # result, and it used to be unanswerable from the outside.
+    captured = job["jd"]
+    trimmed = posting.trim_to_description(captured)
+
+    with st.expander(f"What was analysed ({len(trimmed):,} characters)", expanded=False):
+        if len(trimmed) != len(captured):
+            st.caption(
+                f"{len(captured):,} characters came from the page. "
+                f"{len(captured) - len(trimmed):,} were the careers-page tail — "
+                "benefits, campus write-ups, the employer's technology word "
+                "cloud — and are not part of the job."
+            )
+        else:
+            st.caption("The whole capture was job description; nothing was trimmed.")
+
+        st.text(trimmed)
 
     # The terms a filter looks for and cannot find. These are the literal
     # strings worth surfacing on the resume — provided they are true.

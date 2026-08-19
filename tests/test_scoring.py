@@ -513,19 +513,19 @@ def test_a_posting_of_nothing_but_internals_is_not_scored():
     assert len(result["not_scored"]) == 1
 
 
-def test_domain_and_ways_of_working_still_count():
-    """Vague is not the same as impossible: a candidate either has payments
-    experience or does not, and hiding that would flatter the score."""
+def test_domain_experience_still_counts():
+    """A candidate either has payments experience or does not, and hiding that
+    would flatter the score. Contrast with meta below, which was excluded after
+    a real advert showed it is absent for everybody."""
     result = scoring.score_requirements(
         [
             req("Python"),
             req("financial services", status="absent", kind="domain"),
-            req("stakeholder management", status="absent", kind="meta"),
         ]
     )
 
-    assert result["required_total"] == 3
-    assert result["score"] == 33
+    assert result["required_total"] == 2
+    assert result["score"] == 50
 
 
 def test_the_sixteen_points_come_back():
@@ -593,3 +593,81 @@ def test_a_stated_kind_survives_normalisation():
     )
 
     assert cleaned[0]["kind"] == scoring.EMPLOYER_INTERNAL
+
+
+# =====================================================================
+# COMPETENCY WORDING
+# =====================================================================
+# Barclays closes every advert with "you may be assessed on the key critical
+# skills relevant for success in role, such as risk and controls, change and
+# transformation, business acumen strategic thinking and digital and
+# technology". The model classified all five as meta and marked all five
+# absent, along with "secure coding practices" and "effective unit testing
+# practices" — seven of twelve must-haves were phrases no resume contains, so
+# the score was measuring how little a CV reads like an HR framework.
+def test_competency_wording_does_not_score():
+    with_meta = scoring.score_requirements(
+        [
+            req("Python"),
+            req("business acumen", status="absent", kind="meta"),
+            req("strategic thinking", status="absent", kind="meta"),
+        ]
+    )
+
+    assert with_meta["score"] == 100
+    assert with_meta["required_total"] == 1
+
+
+def test_it_is_reported_so_it_can_be_prepared_for():
+    result = scoring.score_requirements(
+        [req("Python"), req("risk and controls", status="absent", kind="meta")]
+    )
+
+    assert [entry["skill"] for entry in result["not_scored"]] == ["risk and controls"]
+
+
+def test_the_two_unscored_kinds_stay_distinguishable():
+    """They are not the same thing and are not shown together: one cannot be
+    acquired from outside, the other cannot be written on a CV at all."""
+    result = scoring.score_requirements(
+        [
+            req("Python"),
+            req("SOLD Simplification", status="absent", kind="employer_internal"),
+            req("business acumen", status="absent", kind="meta"),
+        ]
+    )
+
+    kinds = {entry["skill"]: entry["kind"] for entry in result["not_scored"]}
+    assert kinds == {
+        "SOLD Simplification": scoring.EMPLOYER_INTERNAL,
+        "business acumen": scoring.META,
+    }
+
+
+# =====================================================================
+# THE PAGE IS NOT THE JOB
+# =====================================================================
+def test_the_technology_word_cloud_is_not_a_requirement():
+    """Barclays' careers page ends with every technology the bank uses
+    anywhere. It put C++, C#, Kotlin and MongoDB into one candidate's list of
+    terms a filter would screen them out for, on a role asking for none."""
+    page = (
+        "AI Engineer\n"
+        "You will build with Python and FastAPI, delivering RAG systems.\n"
+        "This role is based in our Pune office.\n"
+        "What you'll get in return\n"
+        "Competitive holiday allowance\n"
+        "Kotlin C++ F# Objective-C Hadoop DB2 MongoDB Kubernetes\n"
+    )
+
+    result = scoring.keyword_coverage(page, "Python, FastAPI and RAG.")
+
+    assert sorted(result["matched"]) == ["FastAPI", "Python", "RAG"]
+    assert result["missing"] == []
+
+
+def test_a_posting_with_no_furniture_is_untouched():
+    """An ordinary ATS posting is the description and nothing else."""
+    page = "We need Python, Kubernetes and Terraform."
+
+    assert scoring.keyword_coverage(page, "Python only.")["total"] == 3

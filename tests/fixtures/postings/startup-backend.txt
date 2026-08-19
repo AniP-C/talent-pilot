@@ -1,0 +1,19 @@
+Senior Backend Engineer (Python)
+Remote — Europe
+
+We are a twelve-person team building payment reconciliation for marketplaces.
+
+What you'll do:
+- Own our Python services end to end: FastAPI, PostgreSQL, Redis.
+- Design and run event-driven pipelines on Kafka.
+- Deploy with Docker and Terraform to AWS, with CI/CD through GitHub Actions.
+- Instrument what you ship — we use Prometheus and Grafana.
+
+What we're looking for:
+- Five or more years writing production Python.
+- Strong SQL, and comfort with database design and query performance.
+- Experience with REST API design and testing discipline (we practise TDD).
+
+Nice to have:
+- Kubernetes, or a wish to learn it.
+- Prior fintech or payments experience.

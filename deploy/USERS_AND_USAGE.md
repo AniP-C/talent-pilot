@@ -138,6 +138,24 @@ Two things the raw numbers will not tell you:
 
 ---
 
+## 4b. Checking the analyser still behaves
+
+Not usage, but the same "run it and read the numbers" job. `calibrate.py` scores
+three fixture postings against a fixture resume, several times each, and prints
+the spread plus every expectation that broke:
+
+```bash
+python deploy/calibrate.py --runs 3
+```
+
+Each run is one model call per posting, so a full pass is nine. Run it after
+touching a prompt, the vocabulary, or the trimming — a change that looks right
+on one posting routinely breaks another, and this is the only thing that says
+so. A standard deviation above zero on the requirement count means something
+has become non-deterministic again.
+
+---
+
 ## 5. Reading the same thing locally
 
 Everything above works against a local development database by dropping the

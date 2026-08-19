@@ -11,9 +11,10 @@ from pydantic import BaseModel
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import posting
 import scoring
 import workspace
-from ai.gemini import generate_structured
+from ai.gemini import DRAFTING_TEMPERATURE, generate_structured
 from config import logger
 
 # =====================================================================
@@ -151,7 +152,14 @@ def analyze_jd(jd_text: str, resume_data: str, resume_text: str = "") -> dict:
 
     It falls back to the parsed profile when no text is stored, which is the
     case for every profile uploaded before the text was kept.
+
+    The job description is trimmed to the description itself first. What the
+    extension captures is a page, and a corporate careers page carries a
+    holiday allowance, a campus write-up and a word cloud of every technology
+    the employer uses anywhere after the job ends — noise in the prompt, and
+    paid for by the token.
     """
+    jd_text = posting.trim_to_description(jd_text)
     prompt = f"""
     You are a technical recruiter assessing one candidate against one job.
 
@@ -187,6 +195,20 @@ def analyze_jd(jd_text: str, resume_data: str, resume_text: str = "") -> dict:
       evidence    where in the resume you saw it, or "" when absent.
 
     RULES:
+    0. EVERY REQUIREMENT MUST COME FROM THE JOB DESCRIPTION. Read the resume
+       only to decide the STATUS of a requirement the job itself states. Never
+       list a skill because the resume mentions it — copying a resume's skills
+       back as the job's requirements returns a perfect score for a posting
+       that asked for nothing, which is the most misleading thing this tool can
+       do. In the rare case that a description states no requirements at all —
+       four sentences of culture and a "get in touch" — return an empty list.
+    0b. BE COMPLETE AND BE GRANULAR. Everything the description does state
+       belongs in the list. One sentence usually holds several requirements:
+       "using microservices, REST APIs, event-driven architecture,
+       authentication and enterprise integration patterns" is FIVE, not one,
+       and collapsing them into a single entry averages real evidence against
+       real gaps and hides both. Split a list into its items. Only rule 2
+       below — an explicit choice between alternatives — is ever one entry.
     1. One entry per distinct requirement. Never list the same skill twice
        under different names: "LLM" and "Large Language Models" are one
        requirement, as are "GCP" and "Google Cloud".
@@ -223,8 +245,19 @@ def analyze_jd(jd_text: str, resume_data: str, resume_text: str = "") -> dict:
        company's job advert, it is employer_internal. Still list it; it is
        reported as context rather than dropped.
 
-    Then write a short summary of the fit, naming the strongest evidence and
-    the most significant gaps.
+    Then write a short summary naming the strongest evidence and the most
+    significant gaps.
+
+    The summary must NOT deliver a verdict. Do not write "strong fit",
+    "excellent match", "strong candidate", "well suited", or any other overall
+    judgement, and never a percentage. You are writing before the score exists:
+    it is computed from your classifications above, and a summary that opens
+    "the candidate is a strong match" above a headline reading 52% is the tool
+    contradicting itself in the same breath. Describe what the resume shows and
+    what it does not, and stop there.
+
+    Do not mention requirements you classified as "employer_internal" as a
+    shortcoming. Nobody applying from outside can have them.
 
     JOB DESCRIPTION:
     {jd_text[:8000]}
@@ -238,7 +271,23 @@ def analyze_jd(jd_text: str, resume_data: str, resume_text: str = "") -> dict:
         return result
 
     requirements = scoring.normalise_requirements(result.get("requirements"))
+
+    # The model is told that a choice is one requirement, and mostly obeys. On
+    # one run in three it listed "Java" as its own absent must-have for a job
+    # advertised as "either Python or Java" — enough to send somebody off to
+    # learn a language the employer explicitly did not ask for.
+    requirements = scoring.drop_alternatives_already_met(
+        requirements, jd_text, resume_text or resume_data
+    )
+
     coverage = scoring.score_requirements(requirements)
+
+    # The posting's own word, over the model's. A description naming almost no
+    # technology has not said enough to be scored against, however many
+    # requirements came back for it — and what comes back for such a posting is
+    # the resume's skills reflected at it.
+    if scoring.terms_named(jd_text) < scoring.MIN_TERMS_IN_POSTING:
+        coverage["thin"] = True
     keywords = scoring.keyword_coverage(jd_text, resume_text or resume_data)
 
     scoreable = [r for r in requirements if r["kind"] in scoring.SCOREABLE_KINDS]
@@ -313,7 +362,11 @@ def generate_smart_answer(
        a requirement the resume can speak to, connect the two explicitly rather
        than describing the candidate in general terms.
     """
-    result = generate_structured(prompt, AnswerResponse, "SMART_ANSWER")
+    # The one call that wants variety rather than repeatability: the same
+    # question asked twice should not come back as the same sentence.
+    result = generate_structured(
+        prompt, AnswerResponse, "SMART_ANSWER", temperature=DRAFTING_TEMPERATURE
+    )
 
     if "error" not in result:
         result["memory_used"] = memory_file

@@ -6,6 +6,7 @@ Every user gets an isolated directory keyed by their numeric account id:
         jobs.db            job applications
         profiles/*.json    parsed resume profiles
         answers/*.txt      saved application answers
+        captures/*.txt     job descriptions as analysed, newest 25
         gmail_token.json   that user's Gmail OAuth token
         last_sync.txt      timestamp of the last inbox sync
 
@@ -47,6 +48,20 @@ def profiles_dir(user_id: int) -> Path:
 
 def answers_dir(user_id: int) -> Path:
     path = workspace_dir(user_id) / "answers"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def captures_dir(user_id: int) -> Path:
+    """Where the job descriptions that were actually analysed are kept.
+
+    What the extension sends is what gets scored, and until this existed there
+    was no way to see it. "Is the score wrong, or did the page not read
+    properly?" is the first question about any surprising result, and it was
+    unanswerable — which meant guessing at the extraction when the real problem
+    was the scoring, and the other way round.
+    """
+    path = workspace_dir(user_id) / "captures"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
