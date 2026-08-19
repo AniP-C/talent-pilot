@@ -64,7 +64,7 @@ gcloud compute instances list
 ## 1. Connect
 
 ```bash
-gcloud compute ssh talent-pilot --zone us-west1-b
+gcloud compute ssh talent-pilot --zone us-west1-a
 ```
 
 Replace the name and zone with whatever the previous command printed. Every
@@ -105,16 +105,45 @@ cd /opt/talent-pilot && sudo -u talentpilot git pull --ff-only
 Run this **on your laptop**, not on the VM. It stages the code in your home
 directory first, because `/opt/talent-pilot` is not writable by your SSH user:
 
+`pscp` does not expand `~`, so the destination is spelled out in full. Stage
+from `git archive` rather than from the working directory: it copies exactly
+what is committed, and nothing that is not — no `.git`, no `data/`, no `.env`,
+and no local `credentials.json`.
+
 ```bash
-gcloud compute scp --recurse --zone us-west1-b ./ talent-pilot:~/talent-pilot-staging --compress
+git archive --format=tar HEAD | tar -x -C /tmp/deploy-staging
+```
+
+```bash
+gcloud compute scp --recurse --zone us-west1-a /tmp/deploy-staging talent-pilot:/home/<your-user>/ --compress
 ```
 
 Then, back on the VM, sync it into place. The excludes are what protect your
 data, logs, and virtualenv from being clobbered:
 
+Always dry-run it first. `--delete` means anything on the VM that is not in
+the staging directory goes, and the list of what that would remove is the last
+chance to notice a mistake:
+
 ```bash
-sudo rsync -a --delete --exclude '.git' --exclude '.venv' --exclude 'data' --exclude 'logs' --exclude '__pycache__' --exclude '.env' ~/talent-pilot-staging/ /opt/talent-pilot/
+sudo rsync -a --delete --dry-run --itemize-changes --exclude '.git' --exclude '.venv' --exclude 'data' --exclude 'logs' --exclude '__pycache__' --exclude '.env' --exclude 'credentials.json' --exclude 'token.json' --exclude 'dist' --exclude '.cache' ~/deploy-staging/ /opt/talent-pilot/ | grep '^\*deleting'
 ```
+
+Then, if that lists nothing you want to keep:
+
+```bash
+sudo rsync -a --delete --exclude '.git' --exclude '.venv' --exclude 'data' --exclude 'logs' --exclude '__pycache__' --exclude '.env' --exclude 'credentials.json' --exclude 'token.json' --exclude 'dist' --exclude '.cache' ~/deploy-staging/ /opt/talent-pilot/
+```
+
+> **`credentials.json` must be excluded.** The VM's Google OAuth client is not
+> the one on your laptop — the hosted redirect flow and the desktop flow are
+> different clients, and the two files are different sizes. An earlier version
+> of this page copied the whole working directory and did not exclude it, which
+> would have replaced the server's client secret with a desktop one and broken
+> Gmail authorisation for every account. `token.json` is the same story.
+>
+> `.cache` is excluded only so the deploy does not delete pip's cache. It costs
+> nothing to keep and re-downloading it on a micro instance is slow.
 
 Restore ownership — rsync copied the files as your user:
 
