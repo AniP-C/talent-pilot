@@ -12,12 +12,13 @@ import pytest
 import scoring
 
 
-def req(skill, importance="required", status="demonstrated", evidence="x"):
+def req(skill, importance="required", status="demonstrated", evidence="x", kind="skill"):
     return {
         "skill": skill,
         "importance": importance,
         "status": status,
         "evidence": evidence,
+        "kind": kind,
     }
 
 
@@ -355,3 +356,240 @@ def test_splitting_alternatives_invents_gaps_and_sinks_the_score():
     assert inflated["required_total"] == 17
     assert inflated["score"] < correct["score"] - 10
     assert correct["score"] >= 50 > inflated["score"]
+
+
+# =====================================================================
+# ALTERNATIVES: "either Python or Java" is one requirement
+# =====================================================================
+# Found on a real Barclays advert scored against a real resume. The requirement
+# analysis has always known that a choice is one requirement — it is rule 2 of
+# its prompt — and the keyword pass did not, so the same posting was read two
+# incompatible ways. It reported Java, Django, Spring and LlamaIndex as gaps
+# that the candidate satisfied through the stated alternative, and counted
+# React, Angular and TypeScript as three gaps where the posting offers one
+# choice. Every one of those sends the user off to add a skill the employer
+# never asked them for.
+def test_a_choice_between_two_languages_is_one_requirement():
+    result = scoring.keyword_coverage(
+        "Expertise using either Python or Java.", "I write Python daily."
+    )
+
+    assert result["total"] == 1
+    assert result["missing"] == []
+    assert result["score"] == 100
+
+
+def test_a_comma_list_ending_in_or_is_one_requirement():
+    result = scoring.keyword_coverage(
+        "Modern frontend technologies such as React, Angular or TypeScript.",
+        "Backend engineer. Python, FastAPI.",
+    )
+
+    assert result["total"] == 1
+    # One entry naming the whole choice, not three separate failures.
+    assert result["missing"] == ["TypeScript / React / Angular"]
+
+
+def test_a_comma_list_ending_in_and_stays_separate():
+    """The distinction the whole thing rests on: "A, B or C" is a menu and
+    "A, B and C" is a shopping list."""
+    result = scoring.keyword_coverage(
+        "Using microservices, REST APIs and Kubernetes.",
+        "Built REST APIs.",
+    )
+
+    assert result["total"] == 3
+    assert result["matched"] == ["REST API"]
+    assert sorted(result["missing"]) == ["Kubernetes", "Microservices"]
+
+
+def test_a_slash_is_a_choice():
+    result = scoring.keyword_coverage(
+        "Python with FastAPI/Django.", "Shipped services in FastAPI."
+    )
+
+    # Two requirements, not one: "with" is not a separator, so the language and
+    # the framework stay apart. The framework choice does collapse, and is
+    # named by the half the resume actually has.
+    assert result["total"] == 2
+    assert result["matched"] == ["FastAPI"]
+    assert result["missing"] == ["Python"]
+
+
+def test_a_long_framework_choice_collapses_to_one():
+    result = scoring.keyword_coverage(
+        "AI frameworks such as LangChain, LangGraph, LlamaIndex, "
+        "Semantic Kernel, Spring AI or LangChain4j.",
+        "Built agents with LangGraph.",
+    )
+
+    assert result["total"] == 1
+    assert result["matched"] == ["LangGraph"]
+    assert result["missing"] == []
+
+
+def test_a_word_between_two_terms_breaks_the_run():
+    """"Python or Java, including Python with FastAPI" — "including" is not a
+    separator, and treating it as one would merge two different sentences."""
+    result = scoring.keyword_coverage(
+        "We use Kubernetes. Terraform is also required.", "Neither, sorry."
+    )
+
+    assert result["total"] == 2
+
+
+def test_or_inside_a_word_is_not_a_choice():
+    """A naive search for "or" matches "orchestration" and "for", which would
+    silently merge unrelated requirements into one."""
+    result = scoring.keyword_coverage(
+        "You will use Kubernetes for orchestration, Terraform for infrastructure.",
+        "No infrastructure experience.",
+    )
+
+    assert result["total"] == 2
+
+
+def test_a_satisfied_choice_is_named_by_what_the_resume_has():
+    result = scoring.keyword_coverage(
+        "Vector stores: Pinecone, Weaviate or pgvector.",
+        "Used pgvector and Weaviate in production.",
+    )
+
+    assert result["total"] == 1
+    # Named in vocabulary order rather than resume order, so the same posting
+    # always reads the same way.
+    assert result["matched"] == ["Weaviate / pgvector"]
+
+
+def test_langgraph_is_visible():
+    """It was absent from the vocabulary entirely, so a resume naming it five
+    times and a posting asking for it by name could not see each other."""
+    result = scoring.keyword_coverage(
+        "Experience with LangGraph is essential.", "Built multi-agent systems in LangGraph."
+    )
+
+    assert result["matched"] == ["LangGraph"]
+
+
+# =====================================================================
+# WHAT CANNOT BE SCORED
+# =====================================================================
+# A real Barclays advert opened with "you will be required to have an
+# experience in SOLD Simplification" — its own multi-year internal programme.
+# It was extracted as one of five must-haves, so it removed sixteen points from
+# a candidate who could not possibly have had it, and then appeared in the list
+# headed "gaps a recruiter would probe" as something to go and fix.
+def test_an_employer_internal_requirement_does_not_score():
+    with_internal = scoring.score_requirements(
+        [
+            req("Python"),
+            req("RAG"),
+            req("SOLD Simplification", status="absent", kind="employer_internal"),
+        ]
+    )
+    without = scoring.score_requirements([req("Python"), req("RAG")])
+
+    assert with_internal["score"] == without["score"] == 100
+    assert with_internal["required_total"] == 2
+
+
+def test_it_is_still_reported_rather_than_dropped():
+    """The job did say it. Silently discarding a stated requirement would be
+    its own kind of dishonesty."""
+    result = scoring.score_requirements(
+        [req("Python"), req("SOLD Simplification", status="absent", kind="employer_internal")]
+    )
+
+    assert [entry["skill"] for entry in result["not_scored"]] == ["SOLD Simplification"]
+
+
+def test_a_posting_of_nothing_but_internals_is_not_scored():
+    result = scoring.score_requirements(
+        [req("Project Atlas", status="absent", kind="employer_internal")]
+    )
+
+    assert result["scored"] is False
+    assert result["score"] == 0
+    assert len(result["not_scored"]) == 1
+
+
+def test_domain_and_ways_of_working_still_count():
+    """Vague is not the same as impossible: a candidate either has payments
+    experience or does not, and hiding that would flatter the score."""
+    result = scoring.score_requirements(
+        [
+            req("Python"),
+            req("financial services", status="absent", kind="domain"),
+            req("stakeholder management", status="absent", kind="meta"),
+        ]
+    )
+
+    assert result["required_total"] == 3
+    assert result["score"] == 33
+
+
+def test_the_sixteen_points_come_back():
+    """The exact shape of the Barclays run: five must-haves, three met, one of
+    the five unwinnable."""
+    as_scored = scoring.score_requirements(
+        [
+            req("Python"),
+            req("GenAI delivery"),
+            req("enterprise applications", status="partial"),
+            req("cloud-native and DevSecOps", status="absent"),
+            req("SOLD Simplification", status="absent", kind="employer_internal"),
+        ]
+    )
+
+    # 2.5 of four real must-haves, rather than 2.5 of five.
+    assert as_scored["required_total"] == 4
+    assert as_scored["score"] == 62
+
+    # What it scored while the programme name counted as a must-have.
+    as_it_was = scoring.score_requirements(
+        [
+            req("Python"),
+            req("GenAI delivery"),
+            req("enterprise applications", status="partial"),
+            req("cloud-native and DevSecOps", status="absent"),
+            req("SOLD Simplification", status="absent"),
+        ]
+    )
+    assert as_it_was["score"] == 50
+
+
+# =====================================================================
+# NORMALISING WHAT THE MODEL RETURNED
+# =====================================================================
+def test_an_unrecognised_kind_is_scored():
+    """The default must never be the one that quietly removes a requirement
+    from the denominator."""
+    cleaned = scoring.normalise_requirements(
+        [{"skill": "Python", "importance": "required", "status": "absent", "kind": "vibes"}]
+    )
+
+    assert cleaned[0]["kind"] == scoring.SKILL
+
+
+def test_a_missing_kind_is_scored():
+    cleaned = scoring.normalise_requirements(
+        [{"skill": "Python", "importance": "required", "status": "absent"}]
+    )
+
+    assert cleaned[0]["kind"] == scoring.SKILL
+    assert scoring.score_requirements(cleaned)["required_total"] == 1
+
+
+def test_a_stated_kind_survives_normalisation():
+    cleaned = scoring.normalise_requirements(
+        [
+            {
+                "skill": "SOLD Simplification",
+                "importance": "required",
+                "status": "absent",
+                "kind": "EMPLOYER_INTERNAL",
+            }
+        ]
+    )
+
+    assert cleaned[0]["kind"] == scoring.EMPLOYER_INTERNAL

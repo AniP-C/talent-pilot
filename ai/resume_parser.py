@@ -28,6 +28,11 @@ class Requirement(BaseModel):
 
     skill: str
     importance: str   # required | preferred
+    # skill | domain | employer_internal | meta. What sort of thing is being
+    # asked for, which decides whether it can be scored at all — a requirement
+    # naming the employer's own internal programme is unwinnable by anyone
+    # applying from outside. See scoring.VALID_KINDS.
+    kind: str
     status: str       # demonstrated | partial | absent
     evidence: str     # where in the resume, or "" when absent
 
@@ -128,7 +133,7 @@ def save_answer_to_memory(user_id: int, question: str, answer_text: str) -> str:
 # =====================================================================
 # PUBLIC ENDPOINTS
 # =====================================================================
-def analyze_jd(jd_text: str, resume_data: str) -> dict:
+def analyze_jd(jd_text: str, resume_data: str, resume_text: str = "") -> dict:
     """Compare a resume to a job description.
 
     The model is asked only to classify each requirement. The percentage is
@@ -136,6 +141,16 @@ def analyze_jd(jd_text: str, resume_data: str) -> dict:
     reproducible and can be shown with its working. Asking the model for the
     number produced one that ignored its own findings — an analysis listing a
     dozen absent requirements still came back 90%.
+
+    ``resume_data`` is the parsed profile as JSON, which is what the model
+    reads. ``resume_text`` is the resume as extracted from the PDF, and is what
+    the keyword pass reads: that pass exists to approximate a literal filter
+    over the document actually submitted, and running it over the model's
+    re-encoding measured the wrong artefact — anything the parser normalised,
+    merged or dropped was invisible to a scan whose only job is to be literal.
+
+    It falls back to the parsed profile when no text is stored, which is the
+    case for every profile uploaded before the text was kept.
     """
     prompt = f"""
     You are a technical recruiter assessing one candidate against one job.
@@ -146,6 +161,21 @@ def analyze_jd(jd_text: str, resume_data: str) -> dict:
       importance  "required"  the job presents it as a must-have.
                   "preferred" the job calls it preferred, a bonus, a plus, or
                               nice to have.
+
+      kind        "skill"     a transferable tool, platform, language or
+                              technique — Python, Kubernetes, RAG.
+                  "domain"    industry or sector experience — payments,
+                              healthcare, financial services.
+                  "employer_internal"
+                              THIS employer's own programme, platform, system
+                              or process, named as though it were common
+                              knowledge: "SOLD Simplification", "our SDLC",
+                              "the Atlas migration", an internal team or tool.
+                              A capitalised project name you do not recognise
+                              as an industry-wide technology belongs here.
+                  "meta"      behavioural or process expectations —
+                              stakeholder management, mentoring, "risk and
+                              controls".
 
       status      "demonstrated" the resume shows clear, specific evidence.
                   "partial"      the resume shows something adjacent or
@@ -185,6 +215,13 @@ def analyze_jd(jd_text: str, resume_data: str) -> dict:
        is only useful if it is honest about gaps.
     6. Do not produce a score or a percentage anywhere. The score is computed
        from your classifications.
+    7. Be decisive about "employer_internal". An applicant cannot have worked
+       on this employer's internal initiative before joining it, so scoring
+       them against it is scoring them against something no CV could ever
+       satisfy — and then telling them it is a gap they should close. If a
+       named programme is not a technology you would expect to find in another
+       company's job advert, it is employer_internal. Still list it; it is
+       reported as context rather than dropped.
 
     Then write a short summary of the fit, naming the strongest evidence and
     the most significant gaps.
@@ -202,17 +239,21 @@ def analyze_jd(jd_text: str, resume_data: str) -> dict:
 
     requirements = scoring.normalise_requirements(result.get("requirements"))
     coverage = scoring.score_requirements(requirements)
-    keywords = scoring.keyword_coverage(jd_text, resume_data)
+    keywords = scoring.keyword_coverage(jd_text, resume_text or resume_data)
+
+    scoreable = [r for r in requirements if r["kind"] in scoring.SCOREABLE_KINDS]
 
     return {
         # Kept so the dashboard and the extension popup continue to work; both
         # read these three, and neither should have to know how the number is
         # arrived at.
         "match_percentage": coverage["score"],
-        "matched_skills": [
-            r["skill"] for r in requirements if r["status"] != "absent"
-        ],
-        "missing_skills": [r["skill"] for r in requirements if r["status"] == "absent"],
+        "matched_skills": [r["skill"] for r in scoreable if r["status"] != "absent"],
+        # "Gaps a recruiter would probe" is what both clients label this list,
+        # so an employer's own internal programme must not appear in it. It is
+        # not something the candidate can go and fix, and listing it as a gap
+        # was advice to acquire experience that only working there provides.
+        "missing_skills": [r["skill"] for r in scoreable if r["status"] == "absent"],
         "summary": result.get("summary", ""),
         # The working behind the number, plus the filter's-eye view.
         "requirements": requirements,

@@ -107,6 +107,22 @@ def profile_path(user_id: int, filename: str) -> Path:
     return resolve_within(profiles_dir(user_id), filename)
 
 
+def profile_text_path(user_id: int, filename: str) -> Path:
+    """Where the resume's own text sits, beside its parsed profile.
+
+    ``senior_ai_engineer.json`` is accompanied by ``senior_ai_engineer.txt``:
+    the words as the PDF actually contains them, before a model rewrote them
+    into fields. The keyword pass reads this, because approximating a literal
+    filter means measuring the document that was actually submitted.
+
+    Kept as a separate file rather than a key inside the JSON, so that the
+    profile handed to a model stays the small structured thing it is — nothing
+    should be paying to send a resume twice in one prompt.
+    """
+    stem = Path(str(filename)).name.removesuffix(".json")
+    return resolve_within(profiles_dir(user_id), f"{stem}.txt")
+
+
 def answer_path(user_id: int, filename: str) -> Path:
     """Resolve an answer-memory filename inside the user's workspace."""
     return resolve_within(answers_dir(user_id), filename)

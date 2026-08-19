@@ -223,6 +223,10 @@ The file is `chmod 640`, owned `root:talentpilot`. Keep it that way.
 
 ## Accounts
 
+> **Looking for who is using it and how much?** That is
+> [USERS_AND_USAGE.md](USERS_AND_USAGE.md) — every command there is read-only.
+> This section is the one that changes and deletes things.
+
 List them:
 
 ```bash

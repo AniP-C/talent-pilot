@@ -1787,6 +1787,21 @@
                 );
             }
 
+            // Stated by the posting, kept out of the score and out of the
+            // gap list above: an employer's own internal programme is not
+            // something a resume can evidence or an applicant can go and
+            // acquire. Naming it is still useful; calling it a gap was not.
+            const notScored = analysis.coverage?.not_scored || [];
+            if (notScored.length) {
+                body.append(
+                    cardSection(
+                        `ℹ️ Internal to this employer (${notScored.length})`,
+                        "Named by the posting, not counted for or against you.",
+                        cardGapList(notScored.map((entry) => entry.skill))
+                    )
+                );
+            }
+
             if (analysis.summary) {
                 const summary = document.createElement("div");
                 summary.className = "tp-summary";

@@ -287,6 +287,17 @@ function renderAnalysis(result) {
         );
     }
 
+    const notScored = coverage.not_scored || [];
+    if (notScored.length) {
+        area.append(
+            buildSection(
+                `ℹ️ Internal to this employer (${notScored.length})`,
+                "Named by the posting, not counted for or against you.",
+                buildGapList(notScored.map((entry) => entry.skill))
+            )
+        );
+    }
+
     if (keywords.missing?.length) {
         area.append(
             buildSection(

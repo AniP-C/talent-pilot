@@ -36,6 +36,7 @@ import db
 import job_fields
 import posting
 import scoring
+import usage
 import utils
 import workspace
 from ai.resume_parser import (
@@ -494,13 +495,14 @@ async def upload_profile(
     if "error" in structured:
         raise HTTPException(status_code=502, detail=structured["message"])
 
-    filename = utils.save_profile(user.id, name, structured)
+    filename = utils.save_profile(user.id, name, structured, raw_text=raw_text)
 
     # Pre-fill the questionnaire from what the resume already says, so the user
     # confirms a mostly-complete form instead of typing their own phone number
     # in again. Existing answers are never overwritten.
     autofill.seed_from_resume(user.id, structured)
 
+    usage.record(user.id, usage.RESUME_UPLOAD, source="extension")
     logger.info("Profile %s uploaded via extension by user %s", filename, user.id)
 
     return {
@@ -586,6 +588,7 @@ def save_job(job: JobData, user: auth.User = Depends(current_user)) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    usage.record(user.id, usage.JOB_SAVE, source="extension")
     logger.info("Extension saved job #%s for user %s", job_id, user.id)
     return {"message": "Job saved successfully.", "job_id": job_id}
 
@@ -625,8 +628,18 @@ def keyword_scan(req: KeywordScanRequest, user: auth.User = Depends(current_user
     Same division of labour as the inbox filter: the cheap pass runs first and
     for free, and the paid one only when it has earned the call.
     """
-    resume = utils.load_profile(user.id, _validated_profile(user.id, req.profile))
-    return scoring.keyword_coverage(req.jd_text, json.dumps(resume))
+    profile = _validated_profile(user.id, req.profile)
+    usage.record(user.id, usage.KEYWORD_SCAN, source="extension")
+
+    # The resume's own text where it was stored, the parsed profile otherwise.
+    # A filter reads the document that was submitted, so this pass has to read
+    # it too; profiles uploaded before the text was kept fall back to what they
+    # have.
+    resume_text = utils.load_profile_text(user.id, profile)
+    if not resume_text:
+        resume_text = json.dumps(utils.load_profile(user.id, profile))
+
+    return scoring.keyword_coverage(req.jd_text, resume_text)
 
 
 # =====================================================================
@@ -635,12 +648,19 @@ def keyword_scan(req: KeywordScanRequest, user: auth.User = Depends(current_user
 @app.post("/analyze-job")
 def analyze_job(job: JobData, user: auth.User = Depends(current_user)) -> dict:
     """Score the signed-in user's resume against a job description."""
-    resume = utils.load_profile(user.id, _validated_profile(user.id, job.profile))
-    analysis = analyze_jd(job.jd_text, json.dumps(resume))
+    profile = _validated_profile(user.id, job.profile)
+    resume = utils.load_profile(user.id, profile)
+    analysis = analyze_jd(
+        job.jd_text, json.dumps(resume), utils.load_profile_text(user.id, profile)
+    )
 
     if "error" in analysis:
         raise HTTPException(status_code=502, detail=analysis["message"])
 
+    # Recorded only on success. A failed model call costs us and delivers
+    # nothing, so billing a user for it would be indefensible; the error is
+    # already in the logs.
+    usage.record(user.id, usage.ANALYZE_JD, source="extension")
     return analysis
 
 
@@ -682,6 +702,7 @@ def generate_answer(req: AnswerRequest, user: auth.User = Depends(current_user))
     if "error" in result:
         raise HTTPException(status_code=502, detail=result["message"])
 
+    usage.record(user.id, usage.ANSWER_DRAFT, source="extension")
     return result
 
 

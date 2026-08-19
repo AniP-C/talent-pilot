@@ -74,7 +74,8 @@ flowchart LR
 .
 |-- app.py                  Streamlit entrypoint
 |-- ui.py                   Dashboard styling and render helpers
-|-- auth.py                 Accounts, password hashing, API tokens
+|-- auth.py                 Accounts, password hashing, recovery codes, API tokens
+|-- usage.py                Per-account metering: what was used, and what it cost
 |-- workspace.py            Per-user paths and path-traversal defences
 |-- db.py                   Job storage (per workspace)
 |-- contacts.py             Recruiter contact selection (pure)

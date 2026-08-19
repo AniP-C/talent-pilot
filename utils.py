@@ -23,11 +23,53 @@ class ResumeReadError(Exception):
     """Raised when an uploaded file cannot be read as a text-bearing PDF."""
 
 
+# Characters a PDF hands back that no reader ever typed.
+#
+# Typesetters — LaTeX especially, which is what most engineering CVs are built
+# with — substitute a single ligature glyph for "fi", "fl" and "ffi". pypdf
+# returns the glyph, so the extracted text of a real resume contains
+# "workﬂows", "identiﬁcation", "eﬀort" and "conﬁdence". Left alone, a literal
+# search for "workflow" misses a document that visibly says workflow, which is
+# precisely the false negative the keyword pass exists to avoid.
+#
+# The soft hyphen and the non-breaking space are the same class of problem:
+# invisible on the page, fatal to an exact match.
+_TEXT_SUBSTITUTIONS = {
+    "ﬀ": "ff",
+    "ﬁ": "fi",
+    "ﬂ": "fl",
+    "ﬃ": "ffi",
+    "ﬄ": "ffl",
+    "ﬅ": "st",
+    "ﬆ": "st",
+    " ": " ",   # non-breaking space
+    "­": "",    # soft hyphen
+    "‐": "-",   # hyphen
+    "‑": "-",   # non-breaking hyphen
+    "–": "-",   # en dash
+    "—": "-",   # em dash
+    "‘": "'",
+    "’": "'",
+    "“": '"',
+    "”": '"',
+}
+
+
+def normalise_pdf_text(text: str) -> str:
+    """Replace typesetting glyphs with the characters a search would use."""
+    for glyph, replacement in _TEXT_SUBSTITUTIONS.items():
+        text = text.replace(glyph, replacement)
+    return text
+
+
 def extract_pdf_text(source: BinaryIO) -> str:
     """Pull raw text out of a PDF.
 
     Shared by the dashboard uploader and the extension endpoint so both
     reject the same files for the same reasons.
+
+    Normalised on the way out rather than at each use, so the parser, the
+    keyword pass and the stored copy all see the same characters.
     """
     try:
         reader = pypdf.PdfReader(source)
@@ -43,7 +85,7 @@ def extract_pdf_text(source: BinaryIO) -> str:
             "which needs OCR before it can be parsed."
         )
 
-    return text
+    return normalise_pdf_text(text)
 
 # Returned when a user has not uploaded a profile yet, so the AI calls degrade
 # to a harmless empty resume instead of crashing.
@@ -87,8 +129,20 @@ def load_profile(user_id: int, filename: Optional[str] = None) -> dict:
         return dict(EMPTY_PROFILE)
 
 
-def save_profile(user_id: int, filename: str, profile: dict) -> str:
-    """Write a parsed profile into the user's workspace. Returns the filename."""
+def save_profile(
+    user_id: int, filename: str, profile: dict, raw_text: str = ""
+) -> str:
+    """Write a parsed profile into the user's workspace. Returns the filename.
+
+    ``raw_text`` is the resume as extracted from the PDF, kept beside the
+    parsed profile. The keyword pass reads it instead of the parsed profile:
+    that pass approximates a literal filter, and a literal filter reads the
+    document the employer receives, not a model's summary of it.
+
+    Best-effort. A profile that saved but whose text did not is the behaviour
+    every profile had before this existed, and is no reason to fail an upload
+    the user has already paid a model call for.
+    """
     stem = workspace.sanitize_filename(filename)
     if not stem.endswith(".json"):
         stem += ".json"
@@ -97,14 +151,47 @@ def save_profile(user_id: int, filename: str, profile: dict) -> str:
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(profile, handle, indent=2, ensure_ascii=False)
 
+    if raw_text:
+        try:
+            workspace.profile_text_path(user_id, stem).write_text(
+                raw_text, encoding="utf-8"
+            )
+        except (OSError, workspace.UnsafePathError) as exc:
+            logger.error("Could not store resume text for %s: %s", stem, exc)
+
     logger.info("Saved profile %s for user %s", stem, user_id)
     return stem
 
 
+def load_profile_text(user_id: int, filename: Optional[str] = None) -> str:
+    """The resume's own text, or "" when none was stored.
+
+    Empty is a normal answer, not an error: every profile uploaded before the
+    text was kept has none, and the caller falls back to the parsed profile.
+    """
+    if not filename:
+        available = workspace.list_profiles(user_id)
+        if not available:
+            return ""
+        filename = available[0]
+
+    try:
+        path = workspace.profile_text_path(user_id, filename)
+    except workspace.UnsafePathError:
+        logger.warning("Rejected unsafe profile path %r for user %s", filename, user_id)
+        return ""
+
+    try:
+        return path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return ""
+
+
 def delete_profile(user_id: int, filename: str) -> bool:
-    """Remove a profile from the user's workspace."""
+    """Remove a profile, and the resume text stored beside it."""
     try:
         path = workspace.profile_path(user_id, filename)
+        text_path = workspace.profile_text_path(user_id, filename)
     except workspace.UnsafePathError:
         return False
 
@@ -112,6 +199,12 @@ def delete_profile(user_id: int, filename: str) -> bool:
         return False
 
     path.unlink()
+    # Deleting a resume has to delete the resume. Leaving the text behind would
+    # keep the document itself in the workspace after the user asked for it to
+    # be gone, and a later profile saved under the same name would silently
+    # inherit somebody else's words.
+    text_path.unlink(missing_ok=True)
+
     logger.info("Deleted profile %s for user %s", path.name, user_id)
     return True
 

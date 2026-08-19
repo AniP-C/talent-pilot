@@ -14,7 +14,9 @@ import auth
 import autofill
 import db
 import posting
+import scoring
 import ui
+import usage
 import utils
 import workspace
 from ai import resume_parser
@@ -151,6 +153,9 @@ def sign_in(user: auth.User) -> None:
         "created_at": user.created_at,
     }
     db.create_table(workspace.jobs_db_path(user.id))
+    # Free, but it is what makes "active accounts" answerable — a signup count
+    # includes everyone who never came back.
+    usage.record(user.id, usage.SIGN_IN, source="dashboard")
     logger.info("Account %s signed in to the dashboard", user.id)
 
 
@@ -467,6 +472,18 @@ def run_sync(user: auth.User) -> None:
     try:
         summary = sync_inbox_to_db(user.id, progress_callback=status_box.write)
         status_box.update(label="Sync complete", state="complete", expanded=False)
+
+        # Quantity, not one: a sync classifies a batch, and one model call is
+        # paid for per email that reached the classifier. Counting the run as a
+        # single event would understate the most expensive thing this app does.
+        classified = (
+            summary["updated"] + summary["created"] + summary["repeat"]
+            + summary["noted"] + summary["failed"]
+        )
+        if classified:
+            usage.record(
+                user.id, usage.EMAIL_SYNC, source="sync", quantity=classified
+            )
 
         line = (
             f"{summary['updated']} updated · {summary['created']} added · "
@@ -903,9 +920,14 @@ def render_add_form(db_path, profiles: list[str]) -> None:
 # TAB: ANALYZER
 # =====================================================================
 @st.cache_data(show_spinner=False)
-def cached_analysis(jd_text: str, resume_string: str) -> dict:
-    """Cache by content, so re-analysing the same pairing is free."""
-    return resume_parser.analyze_jd(jd_text, resume_string)
+def cached_analysis(jd_text: str, resume_string: str, resume_text: str = "") -> dict:
+    """Cache by content, so re-analysing the same pairing is free.
+
+    ``resume_text`` is part of the key as well as the call: re-uploading a
+    resume changes what the keyword pass sees even when the parsed profile
+    comes back identical.
+    """
+    return resume_parser.analyze_jd(jd_text, resume_string, resume_text)
 
 
 def render_analyzer(user: auth.User, db_path, selected_profile: str | None) -> None:
@@ -931,9 +953,15 @@ def render_analyzer(user: auth.User, db_path, selected_profile: str | None) -> N
         return
 
     resume = utils.load_profile(user.id, selected_profile)
+    resume_text = utils.load_profile_text(user.id, selected_profile)
 
     with st.spinner("Gemini is comparing the job description to your resume…"):
-        result = cached_analysis(job["jd"], json.dumps(resume))
+        result = cached_analysis(job["jd"], json.dumps(resume), resume_text)
+
+    # Counted per analysis the user asked for, including the ones served from
+    # cache: this is the measure of what the product is worth to them, and the
+    # cache is our saving rather than a reason to charge them less.
+    usage.record(user.id, usage.ANALYZE_JD, source="dashboard")
 
     if "error" in result:
         st.error(result["message"])
@@ -974,7 +1002,9 @@ def render_analyzer(user: auth.User, db_path, selected_profile: str | None) -> N
     # take apart is the thing this replaced.
     requirements = result.get("requirements") or []
 
-    if requirements:
+    scored = [r for r in requirements if r["kind"] in scoring.SCOREABLE_KINDS]
+
+    if scored:
         st.markdown("**How that score is made up**")
         st.dataframe(
             pd.DataFrame(
@@ -982,6 +1012,10 @@ def render_analyzer(user: auth.User, db_path, selected_profile: str | None) -> N
                     {
                         "Requirement": r["skill"],
                         "Weight": "Must have" if r["importance"] == "required" else "Preferred",
+                        "Kind": {
+                            scoring.DOMAIN: "Industry",
+                            scoring.META: "Ways of working",
+                        }.get(r["kind"], "Skill"),
                         "Evidence": {
                             "demonstrated": "✅ Demonstrated",
                             "partial": "🟡 Partial",
@@ -989,7 +1023,7 @@ def render_analyzer(user: auth.User, db_path, selected_profile: str | None) -> N
                         }.get(r["status"], r["status"]),
                         "Where": r["evidence"] or "—",
                     }
-                    for r in requirements
+                    for r in scored
                 ]
             ),
             use_container_width=True,
@@ -997,10 +1031,12 @@ def render_analyzer(user: auth.User, db_path, selected_profile: str | None) -> N
             column_config={
                 "Requirement": st.column_config.TextColumn(width="medium"),
                 "Weight": st.column_config.TextColumn(width="small"),
+                "Kind": st.column_config.TextColumn(width="small"),
                 "Evidence": st.column_config.TextColumn(width="small"),
                 "Where": st.column_config.TextColumn(width="large"),
             },
         )
+
     else:
         matched_col, missing_col = st.columns(2)
         with matched_col:
@@ -1011,6 +1047,18 @@ def render_analyzer(user: auth.User, db_path, selected_profile: str | None) -> N
             st.markdown("**❌ Missing skills**")
             for skill in result["missing_skills"] or ["—"]:
                 st.markdown(f"- {skill}")
+
+    # Shown, and shown apart, whether or not anything else scored. A posting
+    # that opens "you must have experience in SOLD Simplification" is naming
+    # its own internal programme: nobody applying from outside has it, no edit
+    # to a resume can produce it, and scoring it cost one real candidate
+    # sixteen points and then told them it was a gap to close. Dropping it
+    # silently would be its own dishonesty — the job did say it.
+    for entry in coverage.get("not_scored") or []:
+        st.caption(
+            f"ℹ️ **{entry['skill']}** looks like something internal to this "
+            "employer, so it is not counted for or against you."
+        )
 
     # The terms a filter looks for and cannot find. These are the literal
     # strings worth surfacing on the resume — provided they are true.
@@ -1079,7 +1127,13 @@ def convert_and_save_profile(user: auth.User, name: str, uploaded) -> None:
                 st.error(structured["message"])
                 return
 
-            filename = utils.save_profile(user.id, name, structured)
+            # The PDF's own words are kept beside the parsed profile. The
+            # keyword pass reads them, because approximating a literal filter
+            # means measuring the document the employer actually receives.
+            filename = utils.save_profile(user.id, name, structured, raw_text=raw_text)
+            # Metered here rather than at the button: this is the point past
+            # which the model call has actually been paid for.
+            usage.record(user.id, usage.RESUME_UPLOAD, source="dashboard")
 
             # Seed the application-form answers from the resume, so the
             # questionnaire arrives mostly filled in. Never overwrites an

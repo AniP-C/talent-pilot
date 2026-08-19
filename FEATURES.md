@@ -279,6 +279,8 @@ because a close button that silently disables a feature is a trap.
 requirement the posting states is listed and classified:
 
 - **Importance** — `required` (a must-have) or `preferred` (a bonus)
+- **Kind** — `skill` (transferable), `domain` (industry experience),
+  `meta` (ways of working), or `employer_internal`
 - **Status** — `demonstrated`, `partial` (adjacent or transferable evidence —
   a different cloud provider, the technique without the named tool), or `absent`
 - **Evidence** — where in your resume it was found
@@ -286,6 +288,20 @@ requirement the posting states is listed and classified:
 The score is then computed in [scoring.py](scoring.py): must-haves carry 80% of
 the weight and nice-to-haves 20%, with partial evidence earning half credit.
 When a posting states only must-haves, they take the full weight.
+
+**What cannot be scored is set aside.** A posting frequently names the
+employer's own programmes as though they were common knowledge — one real
+advert opened with "you will be required to have an experience in SOLD
+Simplification", a Barclays internal initiative. Nobody applying from outside
+has it and no edit to a resume can produce it, so scoring it is scoring someone
+against something no CV could satisfy. It cost one candidate sixteen points and
+then appeared under "gaps a recruiter would probe" as something to go and fix.
+
+Those requirements are kept out of the arithmetic and out of the gap list, and
+still shown — labelled as internal to that employer. The posting did say it;
+silently dropping a stated requirement would be its own dishonesty. Industry
+and ways-of-working requirements are *not* excluded: vague is not the same as
+impossible, and hiding them would flatter the score.
 
 **Why it works this way.** A language model asked for a percentage with no
 rubric returns a number reflecting its disposition rather than the evidence.
@@ -296,9 +312,14 @@ measurement. Now the same input always gives the same number, and the dashboard
 shows the requirement table it was derived from.
 
 **How keyword coverage is calculated.** No AI at all. A curated vocabulary of
-technical terms is checked literally against the posting and your resume. Terms
-the posting never mentions are not counted, so the denominator is what this job
-actually asks for.
+technical terms is checked literally against the posting and **the text of your
+resume as the PDF actually contains it** — not the parsed profile. A filter
+reads the document the employer receives, so this pass reads it too; anything
+the parser normalised, merged or dropped used to be invisible to the one pass
+whose whole job is to be literal. Typesetting glyphs are normalised on the way
+in, because a LaTeX resume extracts as "workﬂows" and no filter searching for
+"workflow" would find it. Terms the posting never mentions are not counted, so
+the denominator is what this job actually asks for.
 
 Two mistakes are structurally impossible here. One skill spelled several ways
 is a single entry, so "LLM" cannot be a match while "Large Language Models" is
@@ -306,12 +327,33 @@ counted as a separate miss. And only listed technical terms are ever
 considered, so generic prose — "collaborate", "best practices", "solutions" —
 never pads the count.
 
+**A choice is one requirement.** "Either Python or Java", "React, Angular or
+TypeScript", "LangChain, LangGraph, LlamaIndex or Semantic Kernel" — the
+posting is asking for any one of them, and the count says so. The separators do
+the work: `A, B or C` is a menu, `A, B and C` is a shopping list, and only the
+first collapses.
+
+This was found on a real posting. Before it, a resume with Python was told it
+lacked Java, a resume with FastAPI was told it lacked Django *and* Spring, and
+one frontend gap was counted three times — four invented gaps and a score seven
+points below the truth. Worse than the number: every invented gap is advice to
+go and learn something the employer never asked for.
+
 The output names the terms the posting uses that your resume does not. Those
 are the literal strings worth surfacing **provided they are true**.
 
 **Limits.** A term absent from the vocabulary is invisible to the keyword pass.
 That is a deliberate trade: a visible, one-line-to-fix gap beats the invisible
-noise of extracting keywords from arbitrary prose.
+noise of extracting keywords from arbitrary prose. Two known consequences:
+
+- The vocabulary has to be maintained. `LangGraph` was missing while being both
+  the thing one posting asked for and the thing that resume evidenced best.
+  Nothing yet reports which terms fell outside it — see
+  [ANALYZER_REDESIGN.md](ANALYZER_REDESIGN.md).
+- Adding terms without the alternatives rule above makes the score *worse*, not
+  better: most of what a modern AI posting names is one option among six.
+- Nested choices — "Python with FastAPI **or** Java with Spring Boot" is a
+  choice between two whole stacks — are only partly caught.
 
 ---
 
@@ -645,6 +687,41 @@ is one click rather than one trip back to Gmail.
 **Why it exists.** Hosted, log files sit on a VM behind SSH, which in practice
 means nobody reads them. Every automated status change is an unattended
 decision about your data, so it belongs somewhere you can actually see it.
+
+---
+
+## 16b. Usage metering
+
+**What it is.** A per-account record of what each user has actually done, so
+the operator can answer "who is using this, how much, and what does it cost?"
+
+**Why it exists.** The AI calls are billed per request and are not evenly
+distributed: one person analysing forty postings a week costs more than fifty
+people who uploaded a CV once and left. Before this, a price could only be
+guessed at.
+
+**Where to see it.** [deploy/USERS_AND_USAGE.md](deploy/USERS_AND_USAGE.md) —
+every command there is read-only, and `deploy/usage_report.py` prints a table of
+accounts ordered by what they cost.
+
+**What is counted.**
+
+| Action | Cost |
+| ------ | ---- |
+| CV upload | one large model call |
+| Job description analysis | one large model call |
+| Answer draft | one model call |
+| Inbox sync | one model call **per email**, so it counts emails, not runs |
+| Keyword scan, job save, sign-in | free — counted as engagement |
+
+**What is not recorded.** No job descriptions, no resume content, no company
+names, no email subjects. An event is an account id, a verb, a count and a
+timestamp. This table spans every account, unlike a workspace, so it is
+deliberately not a second copy of anyone's data.
+
+**Where it lives.** The central accounts database, because the question is
+asked across all accounts at once. Metering failures are logged and swallowed:
+a full disk must never turn a successful analysis into an error the user sees.
 
 ---
 

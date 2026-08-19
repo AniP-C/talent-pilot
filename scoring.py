@@ -44,6 +44,32 @@ _STATUS_CREDIT = {"demonstrated": 1.0, "partial": PARTIAL_CREDIT, "absent": 0.0}
 VALID_IMPORTANCE = ("required", "preferred")
 VALID_STATUS = tuple(_STATUS_CREDIT)
 
+# What kind of thing a requirement is.
+#
+# A job description does not only ask for skills. It also names the employer's
+# own programmes and systems, and nobody outside that employer can evidence
+# one. A real Barclays advert opened with "you will be required to have an
+# experience in SOLD Simplification" — an internal multi-year initiative. It
+# was extracted as a must-have, sat alongside four others, and removed sixteen
+# points from the score of a candidate who could not have had it and could not
+# do anything about it. The gap list then told them to go and get it.
+#
+# Classifying is better than filtering by keyword: there is no vocabulary of
+# every company's internal jargon, but "is this transferable between employers"
+# is a judgement a model makes reliably.
+SKILL = "skill"                        # transferable: a tool, platform or technique
+DOMAIN = "domain"                      # industry experience — payments, healthcare
+EMPLOYER_INTERNAL = "employer_internal"  # this employer's own systems and programmes
+META = "meta"                          # behavioural or process: "stakeholder management"
+
+VALID_KINDS = (SKILL, DOMAIN, EMPLOYER_INTERNAL, META)
+
+# Everything except the unwinnable. Domain experience stays in: it is a real
+# thing a candidate either has or does not, and hiding it would flatter the
+# score. Meta stays in for the same reason — vague is not the same as
+# impossible.
+SCOREABLE_KINDS = (SKILL, DOMAIN, META)
+
 
 # =====================================================================
 # REQUIREMENT COVERAGE
@@ -56,9 +82,22 @@ def score_requirements(requirements: list[dict]) -> dict:
 
     When a job states only must-haves — which is common — the required side
     takes the whole weight instead of capping the achievable score at 80.
+
+    Requirements naming the employer's own systems are set aside rather than
+    scored — see EMPLOYER_INTERNAL. They are returned in ``not_scored`` so the
+    UI can still show them: "this job also wants X, and no outsider has it" is
+    useful context, and silently dropping a stated requirement would be its own
+    kind of dishonesty.
     """
-    required = [r for r in requirements if r.get("importance") == "required"]
-    preferred = [r for r in requirements if r.get("importance") == "preferred"]
+    scoreable = [
+        r for r in requirements if r.get("kind", SKILL) in SCOREABLE_KINDS
+    ]
+    not_scored = [
+        r for r in requirements if r.get("kind", SKILL) not in SCOREABLE_KINDS
+    ]
+
+    required = [r for r in scoreable if r.get("importance") == "required"]
+    preferred = [r for r in scoreable if r.get("importance") == "preferred"]
 
     required_ratio = _coverage(required)
     preferred_ratio = _coverage(preferred)
@@ -70,8 +109,11 @@ def score_requirements(requirements: list[dict]) -> dict:
     elif preferred:
         score = preferred_ratio
     else:
-        # Nothing classified. Reporting 0 would read as a terrible match rather
-        # than as an analysis that did not happen, so the caller is told.
+        # Nothing left to score. Either the model classified nothing, or
+        # everything it found was the employer's own machinery — a posting that
+        # asks only for things no outsider can have. Reporting 0 would read as a
+        # terrible match rather than as an analysis that did not happen, so the
+        # caller is told.
         return {
             "score": 0,
             "scored": False,
@@ -79,6 +121,7 @@ def score_requirements(requirements: list[dict]) -> dict:
             "required_met": 0.0,
             "preferred_total": 0,
             "preferred_met": 0.0,
+            "not_scored": not_scored,
         }
 
     return {
@@ -88,6 +131,8 @@ def score_requirements(requirements: list[dict]) -> dict:
         "required_met": round(required_ratio * len(required), 1),
         "preferred_total": len(preferred),
         "preferred_met": round(preferred_ratio * len(preferred), 1),
+        # Stated by the job, deliberately kept out of the arithmetic.
+        "not_scored": not_scored,
     }
 
 
@@ -132,6 +177,7 @@ def normalise_requirements(requirements) -> list[dict]:
 
         importance = str(entry.get("importance", "")).strip().lower()
         status = str(entry.get("status", "")).strip().lower()
+        kind = str(entry.get("kind", "")).strip().lower()
 
         cleaned.append(
             {
@@ -140,6 +186,11 @@ def normalise_requirements(requirements) -> list[dict]:
                 # something is optional is the assumption that inflates a score.
                 "importance": importance if importance in VALID_IMPORTANCE else "required",
                 "status": status if status in VALID_STATUS else "absent",
+                # An unrecognised kind is scored, for the same reason: the
+                # default must never be the one that quietly removes a
+                # requirement from the denominator. Excluding something takes a
+                # deliberate classification.
+                "kind": kind if kind in VALID_KINDS else SKILL,
                 "evidence": str(entry.get("evidence", "")).strip(),
             }
         )
@@ -194,7 +245,19 @@ SKILL_VOCABULARY: dict[str, list[str]] = {
     "Anthropic Claude": ["claude", "anthropic"],
     "Hugging Face": ["hugging face", "huggingface"],
     "LangChain": ["langchain"],
+    # Added after a real posting named LangGraph, the candidate's resume named
+    # it five times, and neither number could see it: the term was simply not
+    # in this table. An absent term is invisible, which is fine as a limitation
+    # and expensive when it is the strongest evidence either document contains.
+    "LangGraph": ["langgraph"],
     "LlamaIndex": ["llamaindex", "llama index"],
+    "Semantic Kernel": ["semantic kernel"],
+    "Spring AI": ["spring ai"],
+    "LangChain4j": ["langchain4j"],
+    "Ollama": ["ollama"],
+    "LLM Evaluation": ["llm evaluation", "llm-as-a-judge", "evaluator agent", "eval harness"],
+    "Guardrails": ["guardrail", "guardrails"],
+    "Responsible AI": ["responsible ai", "ai safety", "ai ethics"],
     "Embeddings": ["embedding", "embeddings"],
     "Vector Database": ["vector database", "vector databases", "vector store", "vector search"],
     "Pinecone": ["pinecone"],
@@ -209,7 +272,12 @@ SKILL_VOCABULARY: dict[str, list[str]] = {
     "Computer Vision": ["computer vision"],
     "Machine Learning": ["machine learning"],
     "Deep Learning": ["deep learning"],
-    "Agents": ["ai agent", "ai agents", "agentic"],
+    "Agents": [
+        "ai agent", "ai agents", "agentic",
+        # A posting that says "agentic AI workflows" and a resume that says
+        # "multi-agent orchestration" are talking about the same thing.
+        "multi-agent", "multi agent", "agent orchestration",
+    ],
     "MCP": ["model context protocol"],
 
     # --- cloud ---
@@ -220,6 +288,7 @@ SKILL_VOCABULARY: dict[str, list[str]] = {
     "Kubernetes": ["kubernetes", "k8s"],
     "Terraform": ["terraform"],
     "Serverless": ["serverless", "lambda function", "aws lambda"],
+    "DevSecOps": ["devsecops", "devops"],
     "CI/CD": [
         "ci/cd", "cicd", "ci cd",
         "continuous integration", "continuous delivery", "continuous deployment",
@@ -232,6 +301,10 @@ SKILL_VOCABULARY: dict[str, list[str]] = {
     "GraphQL": ["graphql"],
     "gRPC": ["grpc"],
     "Microservices": ["microservice", "microservices"],
+    "Event-Driven Architecture": [
+        "event-driven", "event driven", "event-driven architecture",
+    ],
+    "NoSQL": ["nosql", "no-sql"],
     "Node.js": ["node.js", "nodejs"],
     "React": ["react", "react.js", "reactjs"],
     "Next.js": ["next.js", "nextjs"],
@@ -283,6 +356,11 @@ SKILL_VOCABULARY: dict[str, list[str]] = {
 
     # --- domain ---
     "FinTech": ["fintech", "financial technology"],
+    # Distinct from FinTech: a bank's payments platform and a fintech startup
+    # are different employers asking for different experience, and a posting
+    # frequently names one without the other.
+    "Payments": ["payments engineering", "payment systems", "payment processing"],
+    "Banking": ["banking", "investment bank", "retail banking"],
     "SaaS": ["saas", "software as a service"],
     "E-commerce": ["e-commerce", "ecommerce"],
     "Healthcare": ["healthtech", "healthcare technology"],
@@ -315,8 +393,117 @@ def _mentions(haystack: str, phrase: str) -> bool:
     return re.search(pattern, haystack) is not None
 
 
+def _spans(haystack: str, phrase: str):
+    """Every place ``phrase`` occurs as a whole term."""
+    pattern = f"{_TERM_START}{re.escape(phrase)}{_TERM_END}"
+    return [(match.start(), match.end()) for match in re.finditer(pattern, haystack)]
+
+
 def _normalise(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").lower())
+
+
+# =====================================================================
+# ALTERNATIVES
+# =====================================================================
+# "Strong full-stack engineering expertise using either Python or Java" is ONE
+# requirement, and a candidate who writes Python does not have a Java gap.
+#
+# The requirement analysis has always known this — it is rule 2 of the prompt in
+# ai/resume_parser.py, and it is there because inventing gaps the posting never
+# asked for is the single most common way an assessment goes wrong. The keyword
+# pass did not know it, so the same posting was read two incompatible ways: one
+# Barclays advert produced four "missing" terms (Java, Django, Spring,
+# LlamaIndex) that the candidate satisfied through the stated alternative, and
+# counted React, Angular and TypeScript as three gaps where the posting offers
+# one choice.
+#
+# Nothing but text separates the members of an alternation, so this reads the
+# separators. Everything hangs on the difference between "A, B or C" — pick one
+# — and "A, B and C" — bring all three.
+
+# What may sit between two terms without breaking the run: commas, slashes,
+# whitespace, and the word "or". Anything else — a noun, a verb, a full stop —
+# ends it.
+_SEPARATOR_RE = re.compile(r"^[\s,/]*(?:or|and/or)?[\s,/]*$")
+
+# A separator carrying an explicit choice.
+_DISJUNCTIVE_RE = re.compile(r"\bor\b|/")
+
+# Beyond this, two terms are not in the same list however the text reads.
+_MAX_GAP_CHARS = 40
+
+
+def _alternation_groups(jd: str, present: dict[str, list[str]]) -> list[list[str]]:
+    """Partition the terms a posting mentions into requirements.
+
+    Each returned list is one requirement: several names when the posting
+    offers a choice between them, one name otherwise. Order follows
+    SKILL_VOCABULARY so the output is stable.
+    """
+    located: list[tuple[int, int, str]] = []
+    for canonical, spellings in present.items():
+        for spelling in spellings:
+            located.extend(
+                (start, end, canonical) for start, end in _spans(jd, spelling)
+            )
+
+    located.sort()
+
+    # Terms that belong together, built up as pairs and merged at the end. A
+    # term can appear several times in one posting and join a different list
+    # each time, which is why this cannot be a single pass.
+    links: list[tuple[str, str]] = []
+    run: list[tuple[str, str, bool]] = []  # (left, right, gap offered a choice)
+
+    def close_run() -> None:
+        # The whole run is a choice only if its LAST separator was one. This is
+        # what keeps "microservices, REST APIs, event-driven architecture,
+        # authentication and enterprise integration patterns" intact: it is a
+        # list of things to bring, not a menu, and its final connector says so.
+        if run and run[-1][2]:
+            links.extend((left, right) for left, right, _ in run)
+        run.clear()
+
+    for (_, prev_end, left), (start, _, right) in zip(located, located[1:]):
+        gap = jd[prev_end:start]
+
+        if (
+            left == right
+            or len(gap) > _MAX_GAP_CHARS
+            or not _SEPARATOR_RE.match(gap)
+        ):
+            close_run()
+            continue
+
+        run.append((left, right, bool(_DISJUNCTIVE_RE.search(gap))))
+
+    close_run()
+
+    # Merge into connected components: "Python or Java" and "FastAPI/Django or
+    # Java with Spring Boot" name Java in both, and one requirement satisfied
+    # by any of those four is the honest reading.
+    component: dict[str, str] = {name: name for name in present}
+
+    def root(name: str) -> str:
+        while component[name] != name:
+            component[name] = component[component[name]]
+            name = component[name]
+        return name
+
+    for left, right in links:
+        left_root, right_root = root(left), root(right)
+        if left_root != right_root:
+            component[left_root] = right_root
+
+    grouped: dict[str, list[str]] = {}
+    for canonical in present:
+        grouped.setdefault(root(canonical), []).append(canonical)
+
+    # Sorted by where each group's first member sits in the vocabulary, so the
+    # result does not depend on dictionary iteration order changing.
+    order = list(SKILL_VOCABULARY)
+    return sorted(grouped.values(), key=lambda names: order.index(names[0]))
 
 
 def keyword_coverage(jd_text: str, resume_text: str) -> dict:
@@ -325,27 +512,48 @@ def keyword_coverage(jd_text: str, resume_text: str) -> dict:
     No AI, no network, and the same answer every time. This is the pass that
     approximates an automated filter, which does not care that Azure experience
     transfers to AWS — it cares whether the string "AWS" is on the page.
+
+    Counted in requirements rather than in words: where the posting offers a
+    choice, the alternatives are one entry satisfied by any of them. A resume
+    with Python has no Java gap on a job advertised as "either Python or Java",
+    and reporting one both understates the candidate and sends them off to add
+    a language the employer never asked them for.
     """
     jd = _normalise(jd_text)
     resume = _normalise(resume_text)
 
+    present = {
+        canonical: spellings
+        for canonical, spellings in SKILL_VOCABULARY.items()
+        if any(_mentions(jd, spelling) for spelling in spellings)
+    }
+
     matched: list[str] = []
     missing: list[str] = []
 
-    for canonical, spellings in SKILL_VOCABULARY.items():
-        if not any(_mentions(jd, spelling) for spelling in spellings):
-            continue  # the job never asks for it
+    for group in _alternation_groups(jd, present):
+        have = [
+            canonical
+            for canonical in group
+            if any(_mentions(resume, spelling) for spelling in present[canonical])
+        ]
 
-        if any(_mentions(resume, spelling) for spelling in spellings):
-            matched.append(canonical)
+        if have:
+            # Named by what the resume actually says, not by the whole
+            # alternation: "LangChain / LangGraph" is the useful thing to show
+            # under "terms you already have".
+            matched.append(" / ".join(have))
         else:
-            missing.append(canonical)
+            missing.append(" / ".join(group))
 
     total = len(matched) + len(missing)
 
     return {
         "score": round(len(matched) / total * 100) if total else 0,
         "scored": total > 0,
+        # Every caller reads these as "requirements met" and "requirements
+        # not met", which is what they now are. The lists still add up to
+        # total, so nothing downstream had to change.
         "matched": matched,
         "missing": missing,
         "total": total,
