@@ -78,6 +78,11 @@ def sync_inbox_to_db(
         "fetched": len(emails),
         "updated": 0,
         "created": 0,
+        # A further message about the stage an application is already at — the
+        # second interview round. Counted apart from "updated" because nothing
+        # moved, and apart from "skipped" because something definitely
+        # happened and the user is owed a way to see it.
+        "repeat": 0,
         "noted": 0,
         "skipped": 0,
         "failed": 0,
@@ -162,11 +167,26 @@ def sync_inbox_to_db(
         elif result.get("is_suspicious", False):
             skip_reason = "flagged as phishing or a scam"
             summary["needs_review"] += 1
-        elif not company:
-            skip_reason = "no usable company name in the email or sender domain"
         elif confidence < MIN_CONFIDENCE:
             skip_reason = f"confidence {confidence:.2f} below {MIN_CONFIDENCE}"
             summary["needs_review"] += 1
+        elif not company:
+            # Last look before the email is dropped. An interview invitation
+            # often carries a role, a time and a meeting link and names no
+            # employer anywhere — not in the body, and not in the sending
+            # domain when HR writes from a personal address. The tracker
+            # already knows which employer is interviewing for that title, so
+            # long as only one live application claims it.
+            company = db.company_for_role(role, db_path=db_path)
+
+            if company:
+                decision(
+                    "MATCH %s | no employer named; the only live %r application "
+                    "is at %s",
+                    email["id"], role, company,
+                )
+            else:
+                skip_reason = "no usable company name in the email or sender domain"
 
         if skip_reason:
             decision(
@@ -255,6 +275,7 @@ def sync_inbox_to_db(
     utils.update_last_sync(user_id)
     report(
         f"Sync complete: {summary['updated']} updated, {summary['created']} created, "
+        f"{summary['repeat']} further update(s) at the same stage, "
         f"{summary['noted']} noted, {summary['skipped']} skipped, "
         f"{summary['failed']} failed, {summary['contacts']} with a contact."
     )

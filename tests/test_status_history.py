@@ -133,6 +133,109 @@ def test_an_ambiguous_company_does_not_guess(jobs_db):
     assert statuses["Data Engineer"] == "APPLIED"
 
 
+# =====================================================================
+# A SECOND ROUND AT THE SAME STAGE
+# =====================================================================
+# Round one of an interview is arranged, the application goes to INTERVIEW,
+# and then round two is scheduled. The stage is already INTERVIEW, so the
+# status does not move — and the history row used to be gated on the status
+# moving, which meant the timeline, the recent-changes list and the sync
+# summary were all identical before and after. The email had been read,
+# classified and filed, and every surface a user looks at said nothing
+# happened.
+def test_a_second_email_at_the_same_stage_is_recorded(jobs_db):
+    db.update_job_from_email(
+        "Essindia", "INTERVIEW", "Round 1 scheduled", "",
+        role="Data Scientist", db_path=jobs_db,
+    )
+    outcome = db.update_job_from_email(
+        "Essindia", "INTERVIEW", "Round 2 scheduled", "",
+        role="Data Scientist", db_path=jobs_db,
+    )
+
+    assert outcome == "repeat"
+
+    job_id = db.get_all_jobs(db_path=jobs_db)[0]["id"]
+    history = db.get_status_history(job_id, db_path=jobs_db)
+    reasons = [entry["reason"] for entry in history]
+
+    assert "Round 2 scheduled" in reasons
+
+
+def test_a_second_email_at_the_same_stage_leaves_the_status_alone(jobs_db):
+    """Visible, but not a move: round two is still the interview stage."""
+    db.update_job_from_email(
+        "Essindia", "INTERVIEW", "Round 1", "", role="Data Scientist", db_path=jobs_db
+    )
+    db.update_job_from_email(
+        "Essindia", "INTERVIEW", "Round 2", "", role="Data Scientist", db_path=jobs_db
+    )
+
+    jobs = db.get_all_jobs(db_path=jobs_db)
+    assert len(jobs) == 1
+    assert jobs[0]["status"] == "INTERVIEW"
+    # Marked applied: the stage the email reports is the stage the row is at,
+    # which is nothing like a backwards move the rank guard refused.
+    history = db.get_status_history(jobs[0]["id"], db_path=jobs_db)
+    assert history[-1]["applied"] == 1
+    assert history[-1]["from_status"] == history[-1]["to_status"] == "INTERVIEW"
+
+
+def test_a_repeat_still_keeps_the_note(jobs_db):
+    db.update_job_from_email(
+        "Essindia", "INTERVIEW", "Round 1", "", role="Data Scientist", db_path=jobs_db
+    )
+    db.update_job_from_email(
+        "Essindia", "INTERVIEW", "Round 2", "Teams call on the 20th",
+        role="Data Scientist", db_path=jobs_db,
+    )
+
+    assert "Teams call on the 20th" in db.get_all_jobs(db_path=jobs_db)[0]["notes"]
+
+
+# =====================================================================
+# AN EMAIL THAT NAMES NO EMPLOYER
+# =====================================================================
+# "Your interview for Data Scientist has been scheduled" — a role, a time and
+# a meeting link, and no company anywhere in it. When HR writes from a personal
+# address the sending domain names none either, so the whole email was dropped.
+def test_the_only_live_application_for_a_role_claims_the_email(jobs_db):
+    db.add_job("Essindia", "Data Scientist", db_path=jobs_db)
+
+    assert db.company_for_role("Data Scientist", db_path=jobs_db) == "Essindia"
+
+
+def test_a_seniority_prefix_still_finds_the_role(jobs_db):
+    db.add_job("Essindia", "Data Scientist", db_path=jobs_db)
+
+    assert db.company_for_role("Senior Data Scientist", db_path=jobs_db) == "Essindia"
+
+
+def test_two_applications_for_one_role_are_not_guessed_between(jobs_db):
+    """Attaching a scheduled interview to the wrong employer is worse than
+    skipping the email, and there is nothing in it to break the tie."""
+    db.add_job("Essindia", "Data Scientist", db_path=jobs_db)
+    db.add_job("Nexus", "Data Scientist", db_path=jobs_db)
+
+    assert db.company_for_role("Data Scientist", db_path=jobs_db) == ""
+
+
+def test_a_closed_application_does_not_claim_the_email(jobs_db):
+    """A rejection last month must not swallow an interview invitation for the
+    same title somewhere else."""
+    job_id = db.add_job("Essindia", "Data Scientist", db_path=jobs_db)
+    db.update_status(job_id, "REJECTED", db_path=jobs_db)
+
+    assert db.company_for_role("Data Scientist", db_path=jobs_db) == ""
+
+
+def test_an_untracked_role_matches_nothing(jobs_db):
+    db.add_job("Essindia", "Data Scientist", db_path=jobs_db)
+
+    assert db.company_for_role("Site Reliability Engineer", db_path=jobs_db) == ""
+    assert db.company_for_role("", db_path=jobs_db) == ""
+
+
 def test_a_colliding_insert_attaches_the_note_instead_of_raising(jobs_db):
     """Ambiguous company + a row already at (company, 'Unknown Role')."""
     db.add_job("Acme", "Unknown Role", db_path=jobs_db)

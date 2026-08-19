@@ -123,6 +123,22 @@ IS_HOSTED = bool(PUBLIC_URL)
 # dashboard can read.
 API_BASE_URL = PUBLIC_URL or f"http://{API_HOST}:{API_PORT}"
 
+# The home the extension points people back to. A local instance still sends
+# them to the public site, because that is where the help lives.
+SITE_URL = os.getenv("SITE_URL", "").rstrip("/") or "https://katchjobs.online"
+
+# The Chrome Web Store listing. Held here, once, so the sidebar, the settings
+# tab and the signed-out page cannot drift apart or go stale separately.
+# Deliberately without the `authuser` and `hl` parameters the store hands out
+# when you copy the URL while signed in: the first pins the link to whichever
+# Google account happened to be first in *our* browser, and the second forces
+# every visitor into British English.
+EXTENSION_URL = os.getenv(
+    "EXTENSION_URL",
+    "https://chromewebstore.google.com/detail/talent-pilot-%E2%80%94-ai-job-cop"
+    "/gjnapgojdanomkjfblbagmnlgldoolck",
+)
+
 # =====================================================================
 # REGISTRATION AND ABUSE CONTROLS
 # =====================================================================

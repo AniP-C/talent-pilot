@@ -306,6 +306,12 @@ Every user registers with an email and password. Passwords are stored as
 PBKDF2-HMAC-SHA256 digests (600,000 iterations, per-user random salt) — never
 in plaintext.
 
+There is no password-reset email — the app's only mail scope is
+`gmail.readonly`, which cannot send. Instead, ten single-use **recovery codes**
+are issued at registration and shown once. Any one of them resets the password
+from the sign-in page; **Settings → Recovery codes** shows how many are left and
+can issue a fresh set, which retires the old one.
+
 Each account gets its own workspace directory, keyed by numeric account id:
 
 ```text
@@ -429,7 +435,9 @@ streamlit run app.py
 - **UI**: http://localhost:8501 🌐
 
 On first visit, open the **Create account** tab, register with an email and a
-password of at least 8 characters, and you land straight in your workspace.
+password of at least 8 characters, and you land straight in your workspace. Save
+the recovery codes shown on the way in — they are the only way back if the
+password is forgotten, and they are not shown again.
 
 ### Start the API Backend
 

@@ -207,3 +207,162 @@ def test_handoff_code_is_stored_hashed(users_db):
         stored = conn.execute("SELECT code_hash FROM handoff_codes").fetchone()[0]
 
     assert stored != code
+
+
+# =====================================================================
+# RECOVERY CODES
+# =====================================================================
+# There is no password reset email in this deployment — the only mail scope the
+# app holds is read-only and cannot send — so a forgotten password used to mean
+# an account nobody could open, its owner included.
+def test_a_recovery_code_sets_a_new_password(users_db):
+    user = auth.register("recover@example.com", "old password", db_path=users_db)
+    codes = auth.issue_recovery_codes(user.id, db_path=users_db)
+
+    back_in = auth.reset_password_with_code(
+        "recover@example.com", codes[0], "brand new password", db_path=users_db
+    )
+
+    assert back_in.id == user.id
+    assert auth.authenticate(
+        "recover@example.com", "brand new password", db_path=users_db
+    ).id == user.id
+
+
+def test_the_old_password_stops_working(users_db):
+    user = auth.register("recover@example.com", "old password", db_path=users_db)
+    codes = auth.issue_recovery_codes(user.id, db_path=users_db)
+    auth.reset_password_with_code(
+        "recover@example.com", codes[0], "brand new password", db_path=users_db
+    )
+
+    with pytest.raises(auth.AuthError):
+        auth.authenticate("recover@example.com", "old password", db_path=users_db)
+
+
+def test_a_code_works_only_once(users_db):
+    user = auth.register("recover@example.com", "old password", db_path=users_db)
+    codes = auth.issue_recovery_codes(user.id, db_path=users_db)
+    auth.reset_password_with_code(
+        "recover@example.com", codes[0], "first new password", db_path=users_db
+    )
+
+    with pytest.raises(auth.AuthError):
+        auth.reset_password_with_code(
+            "recover@example.com", codes[0], "second new password", db_path=users_db
+        )
+
+
+def test_hyphens_spaces_and_case_are_all_accepted(users_db):
+    """These get written on paper and typed back weeks later."""
+    user = auth.register("recover@example.com", "old password", db_path=users_db)
+    code = auth.issue_recovery_codes(user.id, db_path=users_db)[0]
+
+    typed = f" {code.replace('-', ' ').lower()} "
+
+    assert auth.reset_password_with_code(
+        "recover@example.com", typed, "brand new password", db_path=users_db
+    ).id == user.id
+
+
+def test_a_code_does_not_open_another_account(users_db):
+    """The code identifies a set, not a person; the email has to agree."""
+    mine = auth.register("mine@example.com", "my password", db_path=users_db)
+    auth.register("theirs@example.com", "their password", db_path=users_db)
+    codes = auth.issue_recovery_codes(mine.id, db_path=users_db)
+
+    with pytest.raises(auth.AuthError):
+        auth.reset_password_with_code(
+            "theirs@example.com", codes[0], "new password", db_path=users_db
+        )
+
+    # And theirs is untouched.
+    assert auth.authenticate(
+        "theirs@example.com", "their password", db_path=users_db
+    ).email == "theirs@example.com"
+
+
+def test_issuing_a_set_invalidates_the_previous_one(users_db):
+    """Two live sets would mean a slip of paper from a year ago still works."""
+    user = auth.register("recover@example.com", "old password", db_path=users_db)
+    first = auth.issue_recovery_codes(user.id, db_path=users_db)
+    auth.issue_recovery_codes(user.id, db_path=users_db)
+
+    with pytest.raises(auth.AuthError):
+        auth.reset_password_with_code(
+            "recover@example.com", first[0], "new password", db_path=users_db
+        )
+
+
+def test_codes_are_stored_hashed(users_db):
+    """A copy of the database must not be a stack of live reset codes."""
+    import sqlite3
+
+    user = auth.register("recover@example.com", "old password", db_path=users_db)
+    codes = auth.issue_recovery_codes(user.id, db_path=users_db)
+
+    conn = sqlite3.connect(users_db)
+    stored = [row[0] for row in conn.execute("SELECT code_hash FROM recovery_codes")]
+    conn.close()
+
+    assert codes[0] not in stored
+    assert auth.normalize_recovery_code(codes[0]) not in stored
+
+
+def test_a_reset_revokes_existing_tokens(users_db):
+    """Whoever is resetting the password is not necessarily whoever is still
+    signed in on another device."""
+    user = auth.register("recover@example.com", "old password", db_path=users_db)
+    token = auth.issue_token(user.id, db_path=users_db)
+    codes = auth.issue_recovery_codes(user.id, db_path=users_db)
+
+    auth.reset_password_with_code(
+        "recover@example.com", codes[0], "brand new password", db_path=users_db
+    )
+
+    assert auth.verify_token(token, db_path=users_db) is None
+
+
+def test_a_short_new_password_is_refused(users_db):
+    user = auth.register("recover@example.com", "old password", db_path=users_db)
+    codes = auth.issue_recovery_codes(user.id, db_path=users_db)
+
+    with pytest.raises(auth.AuthError, match="at least"):
+        auth.reset_password_with_code(
+            "recover@example.com", codes[0], "short", db_path=users_db
+        )
+
+    # Refused before the code was spent — a typo in the new password must not
+    # cost one of ten.
+    assert auth.count_recovery_codes(user.id, db_path=users_db) == len(codes)
+
+
+def test_wrong_codes_are_rate_limited(users_db):
+    """A second door into the account cannot be the unlimited one."""
+    user = auth.register("recover@example.com", "old password", db_path=users_db)
+    auth.issue_recovery_codes(user.id, db_path=users_db)
+
+    for _ in range(auth.MAX_LOGIN_ATTEMPTS):
+        with pytest.raises(auth.AuthError):
+            auth.reset_password_with_code(
+                "recover@example.com", "AAAA-AAAA-AAAA", "new password",
+                db_path=users_db,
+            )
+
+    with pytest.raises(auth.RateLimitError):
+        auth.reset_password_with_code(
+            "recover@example.com", "AAAA-AAAA-AAAA", "new password", db_path=users_db
+        )
+
+
+def test_unused_codes_are_counted(users_db):
+    user = auth.register("recover@example.com", "old password", db_path=users_db)
+    codes = auth.issue_recovery_codes(user.id, db_path=users_db)
+
+    assert auth.count_recovery_codes(user.id, db_path=users_db) == len(codes)
+
+    auth.reset_password_with_code(
+        "recover@example.com", codes[0], "brand new password", db_path=users_db
+    )
+
+    assert auth.count_recovery_codes(user.id, db_path=users_db) == len(codes) - 1

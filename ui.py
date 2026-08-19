@@ -6,7 +6,7 @@ lives in one place.
 
 import streamlit as st
 
-from config import STATUS_LABELS
+from config import EXTENSION_URL, SITE_URL, STATUS_LABELS
 
 # Deliberately restrained: a few spacing and colour corrections on top of the
 # default theme rather than a full re-skin, so Streamlit upgrades don't break it.
@@ -120,6 +120,27 @@ def contact_line(job: dict) -> str:
         parts.append(f"[{phone}](tel:{dialable})")
 
     return "↩️ " + " · ".join(parts)
+
+
+def extension_callout(container=None, *, blurb: str = "") -> None:
+    """One line pointing at the browser extension, and at the site for help.
+
+    The extension is where most of the day-to-day work actually happens — a
+    posting is scored and saved from the page it is on, without a round trip
+    through this dashboard — and someone who only ever sees the website has no
+    reason to know it exists.
+
+    ``container`` takes ``st.sidebar`` (or any Streamlit container) so the same
+    line can sit in the sidebar and in a tab without being written twice;
+    ``blurb`` replaces the default sentence where a page wants to say why the
+    extension matters *there*.
+    """
+    target = container or st
+    target.caption(
+        f"🧩 [Get the Talent Pilot extension]({EXTENSION_URL}) — "
+        + (blurb or "score and save a job from the posting itself.")
+        + f" More help at [katchjobs.online]({SITE_URL})."
+    )
 
 
 def account_chip(email: str) -> None:

@@ -203,6 +203,8 @@ def render_auth_screen() -> None:
                 except auth.AuthError as exc:
                     st.error(str(exc))
 
+            render_password_recovery()
+
         with register_tab:
             if REGISTRATION_CLOSED:
                 st.info("Registration is closed on this instance.")
@@ -236,7 +238,17 @@ def render_auth_screen() -> None:
                         st.error("Those passwords do not match.")
                     else:
                         try:
-                            sign_in(auth.register(email, password, signup_code))
+                            user = auth.register(email, password, signup_code)
+                            # Issued now rather than offered later in Settings:
+                            # recovery codes are only any use if they exist
+                            # *before* the password is forgotten, and nobody
+                            # goes looking for them while they still remember
+                            # it. Held in session state so they survive the
+                            # rerun and can be shown once, on the way in.
+                            st.session_state["new_recovery_codes"] = (
+                                auth.issue_recovery_codes(user.id)
+                            )
+                            sign_in(user)
                             st.rerun()
                         except auth.AuthError as exc:
                             st.error(str(exc))
@@ -244,6 +256,98 @@ def render_auth_screen() -> None:
         st.caption(
             "Your data stays on this machine — each account gets its own local database."
         )
+        ui.extension_callout()
+
+
+def render_password_recovery() -> None:
+    """The way back in for someone who has forgotten their password.
+
+    There is no reset email: the only mail scope this app holds is read-only,
+    so it cannot send one. A recovery code issued when the account was created
+    is what stands in for that link — and unlike a link it works when the
+    address on the account is one you can no longer open either.
+    """
+    with st.expander("Forgotten your password?"):
+        st.caption(
+            "Enter one of the recovery codes you were given when the account "
+            "was created. Each code works once."
+        )
+
+        with st.form("recover_form"):
+            email = st.text_input("Email", placeholder="you@example.com")
+            code = st.text_input("Recovery code", placeholder="XXXX-XXXX-XXXX")
+            new = st.text_input(
+                "New password",
+                type="password",
+                help=f"At least {auth.MIN_PASSWORD_LENGTH} characters.",
+            )
+            confirm = st.text_input("Confirm new password", type="password")
+            submitted = st.form_submit_button("Reset password", use_container_width=True)
+
+        if not submitted:
+            return
+
+        if new != confirm:
+            st.error("Those passwords do not match.")
+            return
+
+        try:
+            user = auth.reset_password_with_code(email, code, new)
+        except auth.RateLimitError as exc:
+            st.warning(str(exc))
+            return
+        except auth.AuthError as exc:
+            st.error(str(exc))
+            return
+
+        # Signed straight in: having proved possession of a code and set a new
+        # password, being asked to type it again immediately is friction with
+        # nothing behind it.
+        sign_in(user)
+        st.rerun()
+
+
+def render_new_recovery_codes() -> None:
+    """Show a freshly issued set of codes, once.
+
+    Nothing stores the plaintext, so this render is the only chance to keep
+    them. It stays on screen until it is dismissed explicitly rather than
+    disappearing on the next interaction.
+
+    Called from exactly one place — above the tabs — so the download and
+    dismiss buttons cannot be created twice in one run. Anything that issues a
+    set puts it in session state and reruns, rather than rendering it in place.
+    """
+    codes = st.session_state.get("new_recovery_codes")
+
+    if not codes:
+        return
+
+    st.warning(
+        "**Save your recovery codes.** These are the only way back into this "
+        "account if you forget your password — there is no reset email. Each "
+        "code works once, and they are not shown again."
+    )
+
+    if st.session_state.get("recovery_codes_replaced"):
+        st.caption("Any codes issued earlier have just stopped working.")
+
+    st.code("\n".join(codes), language=None)
+
+    keep, dismiss = st.columns([1, 3])
+    with keep:
+        st.download_button(
+            "Download",
+            data="\n".join(codes) + "\n",
+            file_name="talent-pilot-recovery-codes.txt",
+            mime="text/plain",
+            use_container_width=True,
+        )
+    with dismiss:
+        if st.button("I have saved them", use_container_width=True):
+            del st.session_state["new_recovery_codes"]
+            st.session_state.pop("recovery_codes_replaced", None)
+            st.rerun()
 
 
 # =====================================================================
@@ -294,6 +398,9 @@ def render_sidebar(user: auth.User) -> str | None:
         if st.sidebar.button("Disconnect Gmail", use_container_width=True):
             gmail_client.disconnect(user.id)
             st.rerun()
+
+    st.sidebar.divider()
+    ui.extension_callout(st.sidebar)
 
     return selected
 
@@ -365,6 +472,11 @@ def run_sync(user: auth.User) -> None:
             f"{summary['updated']} updated · {summary['created']} added · "
             f"{summary['skipped']} skipped"
         )
+        # Said out loud rather than folded into "updated": a second interview
+        # round leaves the stage where it was, so a run that reported only
+        # "0 updated" read as if the email had never been seen.
+        if summary.get("repeat"):
+            line += f" · {summary['repeat']} further update(s) at the same stage"
         # Worth its own mention: a sync that moved no statuses can still be the
         # run that found out who is handling an application.
         if summary.get("contacts"):
@@ -643,11 +755,19 @@ def render_timeline(job_id: int, db_path) -> None:
     with st.expander(f"Stage timeline ({len(history)} events)", expanded=False):
         for entry in history:
             stamp = _readable_timestamp(entry["occurred_at"])
-            arrow = (
-                f"{ui.status_label(entry['from_status'])} → {ui.status_label(entry['to_status'])}"
-                if entry["from_status"]
-                else ui.status_label(entry["to_status"])
-            )
+
+            if entry["from_status"] == entry["to_status"]:
+                # A further email about the stage it was already at — an
+                # interview round two. "Interview → Interview" reads as a bug,
+                # so it is spelled out instead.
+                arrow = f"{ui.status_label(entry['to_status'])} · further update"
+            elif entry["from_status"]:
+                arrow = (
+                    f"{ui.status_label(entry['from_status'])} → "
+                    f"{ui.status_label(entry['to_status'])}"
+                )
+            else:
+                arrow = ui.status_label(entry["to_status"])
 
             if entry["applied"]:
                 st.markdown(f"**{stamp}** · {arrow}  \n*via {entry['source']}*")
@@ -686,9 +806,11 @@ def _duration_summary(history: list[dict]) -> str:
         return ""
 
     now = datetime.now(first.tzinfo)
+    # "Update" rather than "change": a further email at the same stage counts
+    # here too, and it is the more useful reading of "have I heard anything?".
     return (
         f"Open {(now - first).days} days · "
-        f"{(now - last).days} days since the last change"
+        f"{(now - last).days} days since the last update"
     )
 
 
@@ -1001,6 +1123,11 @@ def render_autofill(user: auth.User) -> None:
         "Answered once and reused on every application. The extension suggests "
         "these as you fill a form — nothing is submitted for you."
     )
+    # These answers only pay off inside the extension, so the page that
+    # collects them is the one place a missing install is worth naming.
+    ui.extension_callout(
+        blurb="it is what suggests these answers while you fill a form."
+    )
 
     stats = autofill.completeness(user.id)
     bank = autofill.load(user.id)
@@ -1128,11 +1255,7 @@ def render_activity(user: auth.User, db_path) -> None:
             {
                 "When": _readable_timestamp(entry["occurred_at"]),
                 "Application": f"{entry['company']} — {entry['role']}",
-                "Change": (
-                    f"{entry['from_status']} → {entry['to_status']}"
-                    if entry["from_status"]
-                    else entry["to_status"]
-                ),
+                "Change": _change_label(entry),
                 "Applied": "Yes" if entry["applied"] else "No (would move backwards)",
                 "Source": entry["source"],
                 "Detail": entry["reason"] or "",
@@ -1162,10 +1285,29 @@ def render_activity(user: auth.User, db_path) -> None:
         lines = [
             line
             for line in lines
-            if any(tag in line for tag in ("SKIP", "UPDATED", "CREATED", "NOTED", "ERROR"))
+            if any(
+                tag in line
+                for tag in (
+                    "SKIP", "UPDATED", "CREATED", "REPEAT", "NOTED", "MATCH", "ERROR",
+                )
+            )
         ]
 
     st.code("\n".join(lines[-120:]) or "No matching lines.", language="log")
+
+
+def _change_label(entry: dict) -> str:
+    """How one history row reads in the recent-changes table.
+
+    Same from and to is not a non-event: it is the second interview round, or
+    the rescheduled assessment. Naming it is the difference between the user
+    seeing that the email landed and concluding the sync ignored it.
+    """
+    if entry["from_status"] == entry["to_status"]:
+        return f"{entry['to_status']} (further update)"
+    if entry["from_status"]:
+        return f"{entry['from_status']} → {entry['to_status']}"
+    return entry["to_status"]
 
 
 def _tail(path, limit: int) -> list[str]:
@@ -1202,11 +1344,40 @@ def render_settings(user: auth.User) -> None:
                 st.error(str(exc))
 
     st.divider()
+    st.markdown("**Recovery codes**")
+
+    remaining = auth.count_recovery_codes(user.id)
+
+    if remaining:
+        st.caption(
+            f"{remaining} unused code(s). Each one can set a new password once, "
+            "without needing the old one."
+        )
+    else:
+        # Accounts created before recovery codes existed have none, and so does
+        # anyone who has spent the lot. Both are one forgotten password away
+        # from an account nobody can open.
+        st.caption(
+            "No recovery codes on this account. Without one, a forgotten "
+            "password cannot be reset — there is no reset email."
+        )
+
+    if st.button("Generate a new set"):
+        st.session_state["new_recovery_codes"] = auth.issue_recovery_codes(user.id)
+        st.session_state["recovery_codes_replaced"] = True
+        # Shown at the top of the page rather than here, so the one render of
+        # a set of codes is the same render wherever it was issued.
+        st.rerun()
+
+    st.caption("A new set appears at the top of the page and replaces the old one.")
+
+    st.divider()
     st.markdown("**Browser extension**")
     st.caption(
         "Sign in from the extension popup with these same credentials. "
         "Start the API with `uvicorn api.server:app --port 8000` first."
     )
+    ui.extension_callout()
 
 
 # =====================================================================
@@ -1238,6 +1409,11 @@ def main() -> None:
     profiles = workspace.list_profiles(user.id)
 
     st.title("Job Application Tracker")
+
+    # Above the tabs, on the way in from a fresh registration. The codes are
+    # never recoverable after this render, so they are not put behind a tab
+    # the user has no reason to open yet.
+    render_new_recovery_codes()
 
     # Surfaced on the tab itself so an unfinished questionnaire is visible
     # without having to go looking for it.

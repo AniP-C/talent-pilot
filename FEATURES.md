@@ -101,6 +101,25 @@ across reloads with a cookie holding a revocable token — not credentials.
 limit survives a restart. Failures take constant time, so accounts cannot be
 enumerated by timing.
 
+**Forgotten passwords: recovery codes.** There is no reset email, and there
+cannot be one — the only mail scope this app holds is `gmail.readonly`, which
+can read a mailbox and not send from it. Instead, ten single-use codes are
+issued when the account is created and shown exactly once. Any one of them,
+with the account's email address, sets a new password without needing the old
+one, and signs you straight in.
+
+- Codes are stored as SHA-256 digests, so a copy of the database is not a stack
+  of live reset codes.
+- Spending one leaves the other nine working. Generating a new set in
+  **Settings** invalidates every earlier code, used or not — two live sets would
+  mean a slip of paper from a year ago still opens the account.
+- Attempts are rate limited through the same counters as sign-in: a second door
+  into an account cannot be the unlimited one.
+- A wrong code, an unknown account and an already-spent code all return the same
+  message, so this route cannot be used to find out who has an account.
+- Accounts created before this existed have no codes. **Settings → Recovery
+  codes** says so and issues a set.
+
 ---
 
 ## 3. Resume profiles
@@ -494,6 +513,15 @@ the same run. Without a ranking, whichever was processed last would win. The
 rejected observation is still written to history with a flag, so a
 wrong-looking timeline can be explained rather than guessed at.
 
+**A second round at the same stage is recorded too.** An interview is
+arranged, the application moves to Interview, and then round two is scheduled.
+Nothing about the *stage* changes, and the history row used to be written only
+when it did — so the timeline, the recent-changes list and the sync summary all
+looked exactly as they had before, and a sync that had read, classified and
+filed the email appeared to have missed it. Such an observation is now written
+with the same from and to status, shown as "further update" rather than as an
+arrow pointing at itself, and it counts as activity for the follow-up clock.
+
 **A person always wins.** Editing a status in the dashboard bypasses the
 ranking. The rule exists to stop out-of-order email rewinding an application,
 not to stop you correcting a mistake.
@@ -529,6 +557,14 @@ nothing else — it cannot send, delete, or modify anything.
 is not a tracker status, it is not about an application you submitted, it looks
 like phishing, no usable company name, or confidence below threshold. "Skipped"
 as a bare number is not actionable; knowing *which* tells you what to improve.
+
+**An email that names no employer.** Interview invitations frequently carry a
+role, a time and a meeting link and name no company at all — and when HR writes
+from a personal address, the sending domain names none either. Rather than drop
+the message, the tracker looks for a *live* application with that job title. One
+match and the email can only be about it, so it is used and the inference is
+logged. Two open applications for the same title and nothing is guessed: filing
+a scheduled interview against the wrong employer is worse than skipping it.
 
 **How an email finds its application.** By company and role together. Matching
 on company alone was wrong — two applications at one company meant a rejection

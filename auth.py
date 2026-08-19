@@ -124,6 +124,28 @@ def init_db(db_path=None) -> None:
                 expires_at TEXT NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
+
+            -- Single-use codes that let someone who has forgotten their
+            -- password set a new one. There is no mail sender in this
+            -- deployment — the Gmail scope is read-only and cannot send — so
+            -- a reset link is not available, and without these a forgotten
+            -- password means an account nobody can open, including its owner.
+            --
+            -- Stored as SHA-256 digests, like API tokens rather than like
+            -- passwords: these are generated at full entropy, so a slow KDF
+            -- would buy nothing that the code length has not already bought.
+            -- A used code is kept with a timestamp rather than deleted, so
+            -- "this code has already been used" stays answerable.
+            CREATE TABLE IF NOT EXISTS recovery_codes (
+                code_hash  TEXT PRIMARY KEY,
+                user_id    INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                used_at    TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_recovery_user
+                ON recovery_codes(user_id, used_at);
             """
         )
 
@@ -372,6 +394,160 @@ def change_password(
         conn.execute("DELETE FROM api_tokens WHERE user_id = ?", (int(user_id),))
 
     logger.info("Password changed for account id=%s; tokens revoked", user_id)
+
+
+# =====================================================================
+# RECOVERY CODES
+# =====================================================================
+# How many are issued in one set. Ten is enough that losing one or two to a
+# mistyped attempt does not matter, and few enough to be worth writing down.
+RECOVERY_CODE_COUNT = 10
+
+# Ambiguous characters are left out on purpose: these get written on paper and
+# typed back weeks later, and 0/O and 1/I/l are where that goes wrong. What
+# remains is 32 symbols over 12 characters — around 60 bits, which is far past
+# anything the sign-in rate limit would let through.
+_RECOVERY_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+_RECOVERY_GROUPS = 3
+_RECOVERY_GROUP_SIZE = 4
+
+
+def _new_recovery_code() -> str:
+    """One code, in ``XXXX-XXXX-XXXX`` form."""
+    return "-".join(
+        "".join(
+            secrets.choice(_RECOVERY_ALPHABET) for _ in range(_RECOVERY_GROUP_SIZE)
+        )
+        for _ in range(_RECOVERY_GROUPS)
+    )
+
+
+def normalize_recovery_code(code: str) -> str:
+    """Reduce a typed code to the form it was hashed in.
+
+    Hyphens are presentation, so they are stripped rather than required, along
+    with any spaces a paste brings with it. Lowercase is accepted because the
+    alphabet has no lowercase in it to be confused with.
+    """
+    return re.sub(r"[^0-9A-Z]", "", (code or "").upper())
+
+
+def _recovery_digest(code: str) -> str:
+    return hashlib.sha256(normalize_recovery_code(code).encode("utf-8")).hexdigest()
+
+
+def issue_recovery_codes(
+    user_id: int, count: int = RECOVERY_CODE_COUNT, db_path=None
+) -> list[str]:
+    """Replace this account's recovery codes and return the new ones.
+
+    The plaintext is returned exactly once and never stored, so a set that is
+    not written down at this moment is gone. Issuing invalidates every earlier
+    code for the account, including unused ones: two live sets would mean a
+    slip of paper from a year ago still opens the account.
+    """
+    codes = [_new_recovery_code() for _ in range(max(1, int(count)))]
+    now = _utcnow()
+
+    with _connect(db_path) as conn:
+        conn.execute("DELETE FROM recovery_codes WHERE user_id = ?", (int(user_id),))
+        conn.executemany(
+            "INSERT INTO recovery_codes (code_hash, user_id, created_at) "
+            "VALUES (?, ?, ?)",
+            [(_recovery_digest(code), int(user_id), now) for code in codes],
+        )
+
+    logger.info("Issued %s recovery codes for account id=%s", len(codes), user_id)
+    return codes
+
+
+def count_recovery_codes(user_id: int, db_path=None) -> int:
+    """How many unused codes this account has left."""
+    with _connect(db_path) as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM recovery_codes WHERE user_id = ? AND used_at IS NULL",
+            (int(user_id),),
+        ).fetchone()[0]
+
+
+def reset_password_with_code(
+    email: str, code: str, new_password: str, client_ip: str = "", db_path=None
+) -> User:
+    """Spend one recovery code to set a new password, and return the user.
+
+    Rate limited through the same counters as sign-in, because this is a second
+    door into the same account and an unlimited one would be the weaker of the
+    two. A wrong code is a failed attempt.
+
+    On success every API token is revoked, exactly as a deliberate password
+    change does: whoever is resetting the password is not necessarily whoever
+    is still signed in on another device.
+    """
+    email = normalize_email(email)
+
+    if len(new_password or "") < MIN_PASSWORD_LENGTH:
+        raise AuthError(
+            f"Password must be at least {MIN_PASSWORD_LENGTH} characters long."
+        )
+
+    for identifier in filter(
+        None, [f"email:{email}", f"ip:{client_ip}" if client_ip else ""]
+    ):
+        if is_locked_out(identifier, db_path=db_path):
+            logger.warning("Password reset blocked by rate limit: %s", identifier)
+            raise RateLimitError(
+                f"Too many failed attempts. Please wait {LOGIN_LOCKOUT_MINUTES} "
+                "minutes and try again."
+            )
+
+    digest = _recovery_digest(code)
+
+    with _connect(db_path) as conn:
+        # One statement decides it: the digest has to exist, be unused, and
+        # belong to the account named — a code from another account, or one
+        # already spent, matches nothing and is indistinguishable from a
+        # guess.
+        row = conn.execute(
+            """
+            SELECT r.code_hash, u.id, u.email, u.created_at
+            FROM recovery_codes r
+            JOIN users u ON u.id = r.user_id
+            WHERE r.code_hash = ? AND r.used_at IS NULL AND u.email = ?
+            """,
+            (digest, email),
+        ).fetchone()
+
+        if row:
+            conn.execute(
+                "UPDATE recovery_codes SET used_at = ? WHERE code_hash = ?",
+                (_utcnow(), digest),
+            )
+            conn.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?",
+                (hash_password(new_password), row["id"]),
+            )
+            conn.execute("DELETE FROM api_tokens WHERE user_id = ?", (row["id"],))
+            conn.execute(
+                "DELETE FROM login_attempts WHERE identifier = ?", (f"email:{email}",)
+            )
+
+    if not row:
+        logger.warning(
+            "Failed recovery attempt for %r from %r", email, client_ip or "local"
+        )
+        record_failed_attempt(f"email:{email}", db_path=db_path)
+        if client_ip:
+            record_failed_attempt(f"ip:{client_ip}", db_path=db_path)
+        # Deliberately one message for every failure. Saying which of "no such
+        # account", "wrong code" and "already used" applies would confirm an
+        # account exists to anyone who asks.
+        raise AuthError("That recovery code is not valid for this account.")
+
+    logger.info(
+        "Password reset with a recovery code for account id=%s; tokens revoked",
+        row["id"],
+    )
+    return User(id=row["id"], email=row["email"], created_at=row["created_at"])
 
 
 # =====================================================================

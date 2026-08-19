@@ -618,8 +618,10 @@ def update_job_from_email(
     """Apply an AI-classified email to the workspace.
 
     Returns ``"updated"`` when an existing application moved forward,
-    ``"noted"`` when the email was recorded but the status was left alone
-    (a backwards move), or ``"created"`` when a new application was tracked.
+    ``"repeat"`` when it was already at that stage and this is a further
+    message about it (a second interview round), ``"noted"`` when the email was
+    recorded but the status was left alone (a backwards move), or ``"created"``
+    when a new application was tracked.
 
     ``email_date`` (``YYYY-MM-DD``) dates a row this email *creates*. It is the
     earliest evidence the application exists, which beats the date the sync
@@ -721,8 +723,13 @@ def update_job_from_email(
             combined = f"{existing}\n\n{note}".strip()
             previous = row["status"]
             moves_forward = advances(previous, category)
+            # A further message about a stage the application is already at:
+            # round two of an interview, a rescheduled assessment, a second
+            # "we need one more document". Nothing about jobs.status changes,
+            # which is exactly why it used to disappear without trace.
+            repeats_stage = previous == category
 
-            if moves_forward and previous != category:
+            if moves_forward and not repeats_stage:
                 conn.execute(
                     f"UPDATE jobs SET status = ?, notes = ?, updated_at = ?, "
                     f"{contact_update} WHERE id = ?",
@@ -737,13 +744,25 @@ def update_job_from_email(
                     (combined, now, *contact_values, row["id"]),
                 )
 
-            if previous != category:
-                _record_transition(
-                    conn, row["id"], previous, category,
-                    applied=moves_forward,
-                    source="Email Sync",
-                    reason=subject,
+            # Recorded whether or not the status moved, which is what the
+            # status_history table has always claimed to hold. Gating this on a
+            # *change* meant a second interview round left no record anywhere a
+            # user looks: the stage was already INTERVIEW, so the timeline and
+            # the recent-changes list both stayed exactly as they were and the
+            # sync looked like it had missed the email.
+            _record_transition(
+                conn, row["id"], previous, category,
+                applied=moves_forward,
+                source="Email Sync",
+                reason=subject,
+            )
+
+            if repeats_stage:
+                logger.info(
+                    "Email is a further %s update for %s / %s",
+                    category, company_name, row["role"],
                 )
+                return "repeat"
 
             if moves_forward:
                 logger.info(
@@ -956,6 +975,53 @@ def get_job_by_identity(company: str, role: str, *, db_path) -> Optional[dict]:
         return None
 
     return dict(row) if row else None
+
+
+def company_for_role(role: str, *, db_path) -> str:
+    """The employer of the one live application for ``role``, or "".
+
+    An interview invitation routinely names no employer at all: "Your interview
+    for Data Scientist has been scheduled", a time, and a meeting link. When HR
+    writes from a personal address the sending domain names no employer either,
+    so the email used to be dropped for having no company — the round was
+    arranged and the tracker never heard about it.
+
+    Only a single live application for that title is accepted. Two open
+    applications for "Data Scientist" and there is no way to tell which was
+    scheduled, and attaching it to the wrong one is worse than skipping it. An
+    exact title wins outright; containment ("Senior Data Scientist" against a
+    tracked "Data Scientist") is tried only if no title matches exactly, and
+    only when it too is unambiguous.
+    """
+    role = (role or "").strip()
+
+    if not role:
+        return ""
+
+    with connect(db_path) as conn:
+        placeholders = ", ".join("?" for _ in ACTIVE_STATUSES)
+        rows = conn.execute(
+            f"SELECT company, role FROM jobs WHERE status IN ({placeholders})",
+            tuple(sorted(ACTIVE_STATUSES)),
+        ).fetchall()
+
+    wanted = role.lower()
+    exact = [row for row in rows if (row["role"] or "").lower() == wanted]
+
+    if len(exact) == 1:
+        return exact[0]["company"]
+    if exact:
+        return ""
+
+    loose = [
+        row
+        for row in rows
+        # A blank tracked role would be "contained" in every title there is.
+        if (row["role"] or "").strip()
+        and ((row["role"].lower() in wanted) or (wanted in row["role"].lower()))
+    ]
+
+    return loose[0]["company"] if len(loose) == 1 else ""
 
 
 def get_stats(*, db_path) -> dict:

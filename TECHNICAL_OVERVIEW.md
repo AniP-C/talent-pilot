@@ -134,7 +134,25 @@ CREATE TABLE api_tokens (
     last_used_at TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+CREATE TABLE recovery_codes (
+    code_hash  TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    used_at    TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
 ```
+
+Recovery codes stand in for the password-reset email this deployment cannot
+send — the Gmail scope is `gmail.readonly`. Ten are issued at registration and
+returned in plaintext exactly once. They are digested with plain SHA-256 rather
+than PBKDF2, for the same reason API tokens are: a code is generated at ~60 bits
+of entropy, so a slow KDF defends against nothing the length has not already
+covered. A spent code keeps its row with `used_at` set, so "already used" stays
+distinguishable from "never existed" in the logs — though not in the error
+message, which is identical for every failure so the endpoint cannot be used to
+enumerate accounts.
 
 Password digests are self-describing:
 
@@ -288,6 +306,9 @@ register(email, password) -> User
 authenticate(email, password) -> User          # raises AuthError
 get_user(user_id) -> User | None
 change_password(user_id, current, new) -> None
+issue_recovery_codes(user_id, count=10) -> list[str]   # plaintext returned once
+count_recovery_codes(user_id) -> int                   # unused codes remaining
+reset_password_with_code(email, code, new_password) -> User
 issue_token(user_id) -> str
 verify_token(token) -> User | None
 revoke_token(token) -> None
@@ -406,7 +427,7 @@ sync_inbox_to_db(user_id, progress_callback=None, throttle_seconds=4.0) -> dict
 Flow: resolve the user's workspace → fetch → drop already-processed message ids
 → classify → map category to status → choose the contact → write → mark
 processed. Returns
-`{"fetched", "updated", "created", "noted", "skipped", "failed", "needs_review", "contacts", "run_id"}`.
+`{"fetched", "updated", "created", "repeat", "noted", "skipped", "failed", "needs_review", "contacts", "run_id"}`. `repeat` counts emails about the stage an application was already at — a second interview round. They are held apart from `updated` because nothing moved, and apart from `skipped` because something definitely happened.
 
 Details:
 
@@ -638,7 +659,7 @@ import time.
 
 | File | Covers |
 | ---- | ------ |
-| `test_auth.py` | Hashing, salting, constant-time failure, token issue/verify/revoke/expiry, password rotation |
+| `test_auth.py` | Hashing, salting, constant-time failure, token issue/verify/revoke/expiry, password rotation, recovery codes (single use, per-account, hashed at rest, rate limited) |
 | `test_db.py` | Duplicate rules, status validation, dict rows, email dedupe, stats, schema versioning |
 | `test_workspace.py` | Path traversal across six attack shapes, cross-user isolation, no-fallback profile loading |
 | `test_email_pipeline.py` | Bouncer true/false positives, category mapping |
