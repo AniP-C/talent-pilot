@@ -1448,38 +1448,101 @@
                 display: block;
                 ${placement === "floating"
                     ? `position: fixed; right: 16px; bottom: 16px;
-                       width: min(360px, calc(100vw - 32px));
+                       width: min(370px, calc(100vw - 32px));
                        z-index: 2147483646;`
                     : "margin: 12px 0 16px;"}
+
+                /* The same palette as the popup, which cannot be shared as a
+                   stylesheet: this card lives in a shadow root with
+                   \`all: initial\`, deliberately cut off from everything. The
+                   two are kept in step by hand — a colour changed in
+                   popup.html belongs here too.
+
+                   \`all\` does not reset custom properties, so these survive
+                   the reset above. */
+                --surface: #ffffff;
+                --surface-alt: #eef0f4;
+                --track: #e6e9ef;
+                --border: #dfe3ea;
+                --hairline: #edf0f4;
+                --text: #101828;
+                --text-soft: #344054;
+                --muted: #667085;
+                --brand: #2563eb;
+                --brand-hover: #1d4ed8;
+                --on-brand: #ffffff;
+                --good-bg: #ecfdf3;
+                --good-fg: #15803d;
+                --mid-bg: #fffaeb;
+                --mid-fg: #b45309;
+                --low-bg: #fef3f2;
+                --low-fg: #b42318;
+                --term-bg: #eff4ff;
+                --term-border: #c7d7fe;
+                --term-fg: #3538cd;
+                --shadow: 0 4px 16px rgba(16, 24, 40, 0.10), 0 1px 3px rgba(16, 24, 40, 0.06);
             }
+
+            /* Not a near-black panel. This card sits on somebody else's page,
+               and a darker rectangle than anything around it reads as a
+               foreign object rather than part of the posting. */
+            @media (prefers-color-scheme: dark) {
+                :host {
+                    --surface: #21252d;
+                    --surface-alt: #2a2f39;
+                    --track: #333945;
+                    --border: #343b46;
+                    --hairline: #2b313b;
+                    --text: #e8ecf1;
+                    --text-soft: #cdd5df;
+                    --muted: #98a2b3;
+                    --brand: #7aa5f7;
+                    --brand-hover: #9cbcfa;
+                    --on-brand: #0b1220;
+                    --good-bg: #10291b;
+                    --good-fg: #75e0a7;
+                    --mid-bg: #2e2410;
+                    --mid-fg: #fcd34d;
+                    --low-bg: #35201f;
+                    --low-fg: #fda29b;
+                    --term-bg: #1c2740;
+                    --term-border: #2f4272;
+                    --term-fg: #a4bcfd;
+                    --shadow: 0 4px 20px rgba(0, 0, 0, 0.45);
+                }
+            }
+
             * { box-sizing: border-box; }
             .tp-card {
-                font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+                font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
                 font-size: 13px;
-                line-height: 1.45;
-                color: #1f2328;
-                background: #fff;
-                border: 1px solid #dfe3e8;
-                border-left: 4px solid var(--tp-accent, #0073b1);
-                border-radius: 10px;
-                box-shadow: 0 2px 10px rgba(16, 24, 40, 0.08);
+                line-height: 1.5;
+                color: var(--text);
+                background: var(--surface);
+                border: 1px solid var(--border);
+                /* The band colour, set from JS. A top edge rather than a left
+                   one: in the in-page placement the card is full width, and a
+                   4px left rule on a wide card reads as a quote block. */
+                border-top: 3px solid var(--tp-accent, var(--brand));
+                border-radius: 12px;
+                box-shadow: var(--shadow);
                 overflow: hidden;
             }
             .tp-head {
                 display: flex;
                 align-items: center;
-                gap: 10px;
-                padding: 10px 12px;
+                gap: 12px;
+                padding: 12px 12px 10px;
             }
             .tp-ring {
                 position: relative;
                 flex: 0 0 auto;
-                width: 52px;
-                height: 52px;
+                width: 56px;
+                height: 56px;
                 border-radius: 50%;
                 background: conic-gradient(
-                    var(--tp-accent, #0073b1) calc(var(--tp-pct, 0) * 1%),
-                    #e9ecef 0
+                    var(--tp-accent, var(--brand)) calc(var(--tp-pct, 0) * 1%),
+                    var(--track) 0
                 );
                 display: grid;
                 place-items: center;
@@ -1487,92 +1550,102 @@
             .tp-ring::after {
                 content: "";
                 position: absolute;
-                inset: 5px;
+                inset: 6px;
                 border-radius: 50%;
-                background: #fff;
+                background: var(--surface);
             }
             .tp-ring span {
                 position: relative;
-                font-size: 14px;
+                /* Above the ::after that punches out the middle of the dial.
+                   Both are positioned, so without this the generated content
+                   paints last and the number sits behind the hole — which is
+                   where it had been since the dial was introduced. */
+                z-index: 1;
+                font-size: 15px;
                 font-weight: 700;
-                color: var(--tp-accent, #0073b1);
+                letter-spacing: -0.02em;
+                color: var(--tp-accent, var(--brand));
             }
             .tp-title { flex: 1 1 auto; min-width: 0; }
-            .tp-title b { font-size: 13.5px; }
-            .tp-sub { color: #6b7280; font-size: 12px; }
-            .tp-facts { font-weight: 600; color: #374151; }
-            .tp-actions { display: flex; gap: 4px; flex: 0 0 auto; }
+            .tp-title b { font-size: 13px; font-weight: 650; letter-spacing: -0.01em; }
+            .tp-sub { color: var(--muted); font-size: 12px; }
+            .tp-facts { font-weight: 600; color: var(--text-soft); font-size: 12px; }
+            .tp-actions { display: flex; gap: 2px; flex: 0 0 auto; }
             .tp-icon {
                 all: unset;
                 cursor: pointer;
-                color: #6b7280;
+                color: var(--muted);
                 font-size: 15px;
                 line-height: 1;
-                padding: 3px 5px;
-                border-radius: 5px;
+                padding: 5px 7px;
+                border-radius: 7px;
             }
-            .tp-icon:hover { background: #f1f3f5; color: #1f2328; }
+            .tp-icon:hover { background: var(--surface-alt); color: var(--text); }
             .tp-body { padding: 0 12px 12px; }
-            .tp-row { display: flex; gap: 8px; margin-bottom: 10px; }
+            .tp-row { display: flex; gap: 8px; margin-bottom: 12px; }
             .tp-btn {
                 all: unset;
                 flex: 1 1 auto;
                 text-align: center;
                 cursor: pointer;
-                padding: 7px 10px;
-                border-radius: 7px;
-                font-size: 12.5px;
+                padding: 8px 10px;
+                border-radius: 8px;
+                font-size: 12px;
                 font-weight: 600;
                 font-family: inherit;
             }
-            .tp-btn-primary { background: #0073b1; color: #fff; }
-            .tp-btn-primary:hover { background: #005682; }
-            .tp-btn-quiet { background: #eef1f5; color: #374151; }
-            .tp-btn-quiet:hover { background: #e2e6ec; }
-            .tp-btn[disabled] { opacity: 0.6; cursor: default; }
-            .tp-section { font-size: 11.5px; font-weight: 700; margin: 10px 0 2px; }
-            .tp-hint { color: #6b7280; font-size: 11px; margin: 0 0 6px; }
-            .tp-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+            .tp-btn-primary { background: var(--brand); color: var(--on-brand); }
+            .tp-btn-primary:hover { background: var(--brand-hover); }
+            .tp-btn-quiet {
+                background: var(--surface-alt);
+                color: var(--text-soft);
+                box-shadow: inset 0 0 0 1px var(--border);
+            }
+            .tp-btn-quiet:hover { background: var(--track); }
+            .tp-btn[disabled] { opacity: 0.55; cursor: default; }
+            .tp-section { font-size: 12px; font-weight: 700; margin: 12px 0 2px; }
+            .tp-hint { color: var(--muted); font-size: 11px; margin: 0 0 7px; }
+            .tp-chips { display: flex; flex-wrap: wrap; gap: 5px; }
             .tp-chip {
                 font-size: 11px;
-                padding: 1px 7px;
-                border-radius: 10px;
-                border: 1px solid #cfe0f5;
-                background: #eef3fb;
-                color: #1d4ed8;
+                line-height: 1.6;
+                padding: 2px 9px;
+                border-radius: 999px;
+                border: 1px solid var(--term-border);
+                background: var(--term-bg);
+                color: var(--term-fg);
+                font-weight: 500;
             }
-            .tp-chip-have { border-color: #bfe3c9; background: #eaf6ee; color: #1e7e34; }
+            .tp-chip-have {
+                border-color: var(--good-bg);
+                background: var(--good-bg);
+                color: var(--good-fg);
+            }
             .tp-chip-more {
                 background: transparent;
                 border-style: dashed;
-                border-color: #cbd2da;
-                color: #6b7280;
+                border-color: var(--border);
+                color: var(--muted);
                 cursor: pointer;
                 font-weight: 600;
             }
-            .tp-gaps { margin: 0; padding-left: 16px; }
-            .tp-gaps li { font-size: 11.5px; color: #374151; margin-bottom: 2px; }
+            .tp-chip-more:hover { color: var(--brand); border-color: var(--brand); }
+            .tp-gaps { margin: 0; padding-left: 18px; }
+            .tp-gaps li { font-size: 12px; color: var(--text-soft); margin-bottom: 3px; }
             .tp-verdict {
                 font-size: 12px;
                 font-weight: 600;
-                padding: 6px 9px;
-                border-radius: 7px;
-                margin-bottom: 8px;
+                padding: 8px 11px;
+                border-radius: 9px;
+                margin-bottom: 10px;
+                line-height: 1.45;
             }
-            .tp-good { background: #e6f4ea; color: #1e7e34; }
-            .tp-mid  { background: #fff4e5; color: #92400e; }
-            .tp-low  { background: #fdecea; color: #a02622; }
-            .tp-note { font-size: 11.5px; color: #6b7280; }
-            .tp-warn { font-size: 11.5px; color: #a02622; }
-            .tp-summary { font-size: 11.5px; color: #374151; margin-top: 8px; }
-            @media (prefers-color-scheme: dark) {
-                .tp-card { background: #1b1f24; border-color: #30363d; color: #e6edf3; }
-                .tp-ring::after { background: #1b1f24; }
-                .tp-icon:hover { background: #262c33; color: #e6edf3; }
-                .tp-btn-quiet { background: #262c33; color: #d0d7de; }
-                .tp-btn-quiet:hover { background: #30363d; }
-                .tp-gaps li, .tp-summary, .tp-facts { color: #c9d1d9; }
-            }
+            .tp-good { background: var(--good-bg); color: var(--good-fg); }
+            .tp-mid  { background: var(--mid-bg); color: var(--mid-fg); }
+            .tp-low  { background: var(--low-bg); color: var(--low-fg); }
+            .tp-note { font-size: 11px; color: var(--muted); }
+            .tp-warn { font-size: 11px; color: var(--low-fg); }
+            .tp-summary { font-size: 12px; color: var(--text-soft); margin-top: 10px; line-height: 1.55; }
         `;
 
         return style;

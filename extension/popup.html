@@ -6,102 +6,177 @@
     <style>
         /* Every colour is a token, and only the tokens are redefined for dark
            mode. A colour written straight into a rule is a colour that will be
-           wrong in one of the two themes. */
+           wrong in one of the two themes.
+
+           These tokens are mirrored by THEME in content.js, which styles the
+           in-page card. The card lives in a shadow root with `all: initial`,
+           so it cannot inherit this sheet — the two are kept in step by hand,
+           and a change here belongs there too. */
         :root {
-            --accent: #0073b1;
-            --accent-dark: #005682;
-            --success: #1e7e34;
+            --accent: #2563eb;
+            --accent-hover: #1d4ed8;
+            --accent-soft: #eff4ff;
+            --on-accent: #ffffff;
+
+            --success: #15803d;
             --warn: #b45309;
-            --danger: #c9302c;
-            --border: #dfe3e8;
-            --bg: #f6f7f9;
+            --danger: #b42318;
+
+            /* Three depths rather than two. A form control that sits on a card
+               that sits on the page needs to be told apart from both, and one
+               shared "surface" colour is what made every panel look like the
+               same flat rectangle. */
+            --bg: #f5f6f8;
             --surface: #ffffff;
-            --surface-alt: #eceff3;
-            --track: #e9ecef;
-            --text: #1f2328;
-            --muted: #6b7280;
-            --hairline: #f1f3f5;
-            --good-bg: #e6f4ea;
-            --good-fg: #1e7e34;
-            --mid-bg: #fff4e5;
-            --mid-fg: #92400e;
-            --low-bg: #fdecea;
-            --low-fg: #a02622;
-            --nudge-bg: #fff8e1;
-            --nudge-border: #ffe08a;
-            --term-bg: #eef3fb;
-            --term-border: #cfe0f5;
-            --term-fg: #1d4ed8;
+            --surface-alt: #eef0f4;
+            --track: #e6e9ef;
+
+            --border: #dfe3ea;
+            --hairline: #edf0f4;
+
+            --text: #101828;
+            --text-soft: #344054;
+            --muted: #667085;
+
+            --good-bg: #ecfdf3;
+            --good-fg: #15803d;
+            --mid-bg: #fffaeb;
+            --mid-fg: #b45309;
+            --low-bg: #fef3f2;
+            --low-fg: #b42318;
+
+            --nudge-bg: #fffaeb;
+            --nudge-border: #fedf89;
+            --term-bg: #eff4ff;
+            --term-border: #c7d7fe;
+            --term-fg: #3538cd;
+
+            /* Light gets shadows, dark gets contrast. Shadows on a dark
+               surface read as smudges, so the dark block below replaces these
+               with nothing and leans on the border instead. */
+            --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
+            --shadow-md: 0 1px 3px rgba(16, 24, 40, 0.08), 0 1px 2px rgba(16, 24, 40, 0.04);
+            --ring: 0 0 0 3px rgba(37, 99, 235, 0.25);
         }
 
         /* Chrome renders the popup in the browser's theme, so the popup should
-           follow it. A white panel on a dark browser reads as a bug. */
+           follow it. A white panel on a dark browser reads as a bug.
+
+           Not a black panel either: the previous #14181d was darker than
+           anything Chrome puts around it, so the popup read as a hole rather
+           than a surface. These are greys with a little blue in them, which is
+           what the browser chrome above them is. */
         @media (prefers-color-scheme: dark) {
             :root {
-                --accent: #4aa3d8;
-                --accent-dark: #74bce8;
-                --success: #4ec97a;
-                --warn: #e0a458;
-                --danger: #f28b82;
-                --border: #30363d;
-                --bg: #14181d;
-                --surface: #1b1f24;
-                --surface-alt: #262c33;
-                --track: #30363d;
-                --text: #e6edf3;
-                --muted: #9aa4b0;
-                --hairline: #262c33;
-                --good-bg: #16301f;
-                --good-fg: #6ee7a0;
-                --mid-bg: #33260f;
-                --mid-fg: #f0c078;
-                --low-bg: #3a1d1c;
-                --low-fg: #ffa199;
+                --accent: #7aa5f7;
+                --accent-hover: #9cbcfa;
+                --accent-soft: #1c2740;
+                --on-accent: #0b1220;
+
+                --success: #4ade80;
+                --warn: #fbbf24;
+                --danger: #fda29b;
+
+                --bg: #181b21;
+                --surface: #21252d;
+                --surface-alt: #2a2f39;
+                --track: #333945;
+
+                --border: #343b46;
+                --hairline: #2b313b;
+
+                --text: #e8ecf1;
+                --text-soft: #cdd5df;
+                --muted: #98a2b3;
+
+                --good-bg: #10291b;
+                --good-fg: #75e0a7;
+                --mid-bg: #2e2410;
+                --mid-fg: #fcd34d;
+                --low-bg: #35201f;
+                --low-fg: #fda29b;
+
                 --nudge-bg: #2b2410;
                 --nudge-border: #4d4020;
-                --term-bg: #16243a;
-                --term-border: #24405f;
-                --term-fg: #8ab4f8;
+                --term-bg: #1c2740;
+                --term-border: #2f4272;
+                --term-fg: #a4bcfd;
+
+                --shadow-sm: none;
+                --shadow-md: none;
+                --ring: 0 0 0 3px rgba(122, 165, 247, 0.3);
             }
         }
 
         * { box-sizing: border-box; }
 
         body {
-            width: 330px;
+            width: 348px;
             margin: 0;
             padding: 14px;
             background: var(--bg);
-            font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            /* One scale — 11 / 12 / 13 / 15 — instead of the 9.5, 10.5, 11.5
+               and 12.5 that had accumulated. Half-pixel type is what made this
+               look assembled rather than designed. */
             font-size: 13px;
+            line-height: 1.5;
             color: var(--text);
+            -webkit-font-smoothing: antialiased;
         }
 
         .header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            border-bottom: 2px solid var(--accent);
-            padding-bottom: 8px;
-            margin-bottom: 12px;
+            padding-bottom: 12px;
+            margin-bottom: 14px;
+            border-bottom: 1px solid var(--border);
         }
 
-        .header h3 { margin: 0; font-size: 15px; }
+        .header h3 {
+            margin: 0;
+            font-size: 15px;
+            font-weight: 650;
+            letter-spacing: -0.01em;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* A mark rather than an emoji. An emoji is whatever the operating
+           system decides it is, at whatever size, in whatever colour. */
+        .brand-dot {
+            width: 22px;
+            height: 22px;
+            border-radius: 7px;
+            background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+            display: grid;
+            place-items: center;
+            color: var(--on-accent);
+            font-size: 12px;
+            font-weight: 700;
+            flex: 0 0 auto;
+        }
 
         .link {
             color: var(--accent);
             font-size: 12px;
             cursor: pointer;
             font-weight: 600;
+            padding: 4px 6px;
+            border-radius: 6px;
+            transition: background 0.12s ease;
         }
-        .link:hover { text-decoration: underline; }
+        .link:hover { background: var(--accent-soft); }
 
         .card {
             background: var(--surface);
             border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 10px;
-            margin-bottom: 10px;
+            border-radius: 12px;
+            padding: 12px;
+            margin-bottom: 12px;
+            box-shadow: var(--shadow-sm);
         }
 
         .muted { color: var(--muted); font-size: 12px; }
@@ -111,65 +186,117 @@
         .job-facts {
             font-size: 12px;
             font-weight: 600;
-            margin-top: 5px;
-            padding-top: 5px;
+            color: var(--text-soft);
+            margin-top: 8px;
+            padding-top: 8px;
             border-top: 1px solid var(--hairline);
         }
 
-        label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+        label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-soft);
+            margin-bottom: 5px;
+        }
 
         input, select {
             width: 100%;
-            padding: 8px;
-            margin-bottom: 8px;
+            padding: 8px 10px;
+            margin-bottom: 10px;
             border: 1px solid var(--border);
-            border-radius: 6px;
+            border-radius: 8px;
             font-size: 13px;
             font-family: inherit;
             background: var(--surface);
             color: var(--text);
+            transition: border-color 0.12s ease, box-shadow 0.12s ease;
         }
+        input::placeholder { color: var(--muted); }
 
-        input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+        /* A ring rather than an outline. `outline-offset: -1px` sat the old
+           focus state inside the border, which on a 1px control reads as the
+           border simply changing colour. */
+        input:focus, select:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: var(--ring);
+        }
 
         .btn {
             width: 100%;
-            padding: 9px;
-            margin-top: 4px;
-            border: none;
-            border-radius: 6px;
+            padding: 10px;
+            margin-top: 6px;
+            border: 1px solid transparent;
+            border-radius: 8px;
             font-weight: 600;
             font-size: 13px;
+            font-family: inherit;
             cursor: pointer;
+            transition: background 0.12s ease, box-shadow 0.12s ease, transform 0.06s ease;
         }
-        .btn:disabled { opacity: 0.6; cursor: default; }
-        .btn-primary { background: var(--accent); color: #fff; }
-        .btn-primary:hover:not(:disabled) { background: var(--accent-dark); }
-        .btn-success { background: var(--success); color: #fff; }
-        .btn-success:hover:not(:disabled) { filter: brightness(0.92); }
-        .btn-ghost { background: transparent; color: var(--muted); font-weight: 500; }
-        .btn-ghost:hover { text-decoration: underline; }
+        .btn:disabled { opacity: 0.55; cursor: default; }
+        .btn:active:not(:disabled) { transform: translateY(1px); }
+        .btn:focus-visible { outline: none; box-shadow: var(--ring); }
 
-        .tabs { display: flex; gap: 4px; margin-bottom: 10px; }
+        .btn-primary {
+            background: var(--accent);
+            color: var(--on-accent);
+            box-shadow: var(--shadow-sm);
+        }
+        .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+
+        /* Saving is the confirming action, so it stays green — but as an
+           outline rather than a second filled button. Two solid blocks side by
+           side gave neither one priority. */
+        .btn-success {
+            background: var(--surface);
+            color: var(--success);
+            border-color: var(--success);
+        }
+        .btn-success:hover:not(:disabled) { background: var(--good-bg); }
+
+        .btn-ghost {
+            background: transparent;
+            color: var(--muted);
+            font-weight: 500;
+        }
+        .btn-ghost:hover { background: var(--surface-alt); color: var(--text); }
+
+        /* A segmented control: one track, the active segment lifted out of it.
+           Two separate grey pills gave no sense that they were alternatives. */
+        .tabs {
+            display: flex;
+            gap: 3px;
+            margin-bottom: 12px;
+            padding: 3px;
+            background: var(--surface-alt);
+            border-radius: 9px;
+        }
         .tab {
             flex: 1;
             padding: 7px;
             text-align: center;
-            border-radius: 6px;
+            border-radius: 7px;
             cursor: pointer;
             font-weight: 600;
             font-size: 12px;
-            background: var(--surface-alt);
             color: var(--muted);
+            transition: background 0.12s ease, color 0.12s ease;
         }
-        .tab.active { background: var(--accent); color: #fff; }
+        .tab:hover:not(.active) { color: var(--text); }
+        .tab.active {
+            background: var(--surface);
+            color: var(--text);
+            box-shadow: var(--shadow-sm);
+        }
 
         /* A checkbox row, for settings that are on/off rather than typed. */
         .switch {
             display: flex;
             align-items: flex-start;
-            gap: 8px;
-            margin: 2px 0 10px;
+            gap: 9px;
+            margin: 2px 0 12px;
         }
         .switch input {
             width: auto;
@@ -181,19 +308,29 @@
             margin: 0;
             font-weight: 500;
             font-size: 12px;
-            line-height: 1.4;
+            line-height: 1.45;
+            color: var(--text);
             cursor: pointer;
         }
-        .switch .muted { display: block; font-size: 11px; margin-top: 2px; }
+        .switch .muted { display: block; font-size: 11px; margin-top: 3px; }
 
         .account {
             display: flex;
             justify-content: space-between;
             align-items: center;
+            gap: 8px;
             font-size: 12px;
-            margin-bottom: 10px;
+            margin-bottom: 12px;
+            padding: 8px 10px;
+            background: var(--surface-alt);
+            border-radius: 9px;
         }
-        .account .email { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+        .account .email {
+            font-weight: 600;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
 
         #upload-panel, #settings-panel {
             margin-top: 14px;
@@ -207,14 +344,15 @@
             font-weight: 600;
             color: var(--accent);
             list-style: none;
-            padding: 4px 0;
+            padding: 5px 0;
+            border-radius: 6px;
         }
         #upload-panel summary::-webkit-details-marker,
         #settings-panel summary::-webkit-details-marker { display: none; }
         #upload-panel summary:hover,
-        #settings-panel summary:hover { text-decoration: underline; }
-        #upload-panel form, #settings-panel form { margin-top: 8px; }
-        #upload-panel input[type="file"] { padding: 6px; font-size: 12px; }
+        #settings-panel summary:hover { color: var(--accent-hover); }
+        #upload-panel form, #settings-panel form { margin-top: 10px; }
+        #upload-panel input[type="file"] { padding: 7px; font-size: 12px; }
         #upload-status, #settings-status {
             margin-top: 8px;
             font-size: 12px;
@@ -224,32 +362,34 @@
         .nudge {
             background: var(--nudge-bg);
             border: 1px solid var(--nudge-border);
-            border-radius: 6px;
-            padding: 7px 9px;
-            margin-bottom: 10px;
+            border-radius: 9px;
+            padding: 9px 11px;
+            margin-bottom: 12px;
             font-size: 12px;
             line-height: 1.5;
+            color: var(--text);
         }
 
-        #status-area { margin-top: 10px; font-size: 12.5px; line-height: 1.5; }
+        #status-area { margin-top: 12px; font-size: 12px; line-height: 1.5; }
         .warning { color: var(--danger); font-weight: 600; }
         .success-text { color: var(--success); font-weight: 600; }
         .score { font-size: 15px; font-weight: 700; }
         .hidden { display: none !important; }
 
         /* --- Analysis result -------------------------------------------
-           A 330px popup cannot take running prose. Everything here exists to
-           make the result scannable: the numbers read at a glance, the gaps
-           are countable without being read, and the summary is one tap away
-           rather than in the way. */
-        .scores { display: flex; gap: 8px; margin-bottom: 4px; }
+           A popup this narrow cannot take running prose. Everything here
+           exists to make the result scannable: the numbers read at a glance,
+           the gaps are countable without being read, and the summary is one
+           tap away rather than in the way. */
+        .scores { display: flex; gap: 10px; margin-bottom: 6px; }
         .score-card {
             flex: 1;
             background: var(--surface);
             border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 9px 6px;
+            border-radius: 12px;
+            padding: 12px 8px 10px;
             text-align: center;
+            box-shadow: var(--shadow-sm);
         }
 
         /* A dial rather than a bar, and the same dial the in-page card draws.
@@ -257,9 +397,9 @@
            consistency is what lets the two be read as the same measurement. */
         .score-ring {
             position: relative;
-            width: 58px;
-            height: 58px;
-            margin: 0 auto 2px;
+            width: 64px;
+            height: 64px;
+            margin: 0 auto 6px;
             border-radius: 50%;
             background: conic-gradient(
                 var(--dial, var(--accent)) calc(var(--pct, 0) * 1%),
@@ -271,25 +411,31 @@
         .score-ring::after {
             content: "";
             position: absolute;
-            inset: 5px;
+            inset: 6px;
             border-radius: 50%;
             background: var(--surface);
         }
         .score-value {
             position: relative;
-            font-size: 15px;
+            /* Above the ::after that punches the hole in the dial. Both are
+               positioned, so without this the generated content paints last
+               and the number sits behind the white centre — which is where it
+               has been since the dial was introduced. */
+            z-index: 1;
+            font-size: 17px;
             font-weight: 700;
             line-height: 1.1;
+            letter-spacing: -0.02em;
         }
         .score-label {
-            font-size: 9.5px;
+            font-size: 10px;
             color: var(--muted);
             text-transform: uppercase;
-            letter-spacing: 0.04em;
-            margin-top: 3px;
-            font-weight: 600;
+            letter-spacing: 0.06em;
+            margin-top: 2px;
+            font-weight: 700;
         }
-        .score-sub { font-size: 10px; color: var(--muted); margin-top: 4px; line-height: 1.35; }
+        .score-sub { font-size: 11px; color: var(--muted); margin-top: 5px; line-height: 1.4; }
 
         /* Banded so the number carries meaning before it is read. */
         .score-good { color: var(--good-fg); --dial: var(--success); }
@@ -297,12 +443,12 @@
         .score-low  { color: var(--low-fg);  --dial: var(--danger); }
 
         .verdict {
-            font-size: 11.5px;
+            font-size: 12px;
             font-weight: 600;
-            padding: 6px 9px;
-            border-radius: 6px;
-            margin-bottom: 8px;
-            line-height: 1.4;
+            padding: 9px 11px;
+            border-radius: 9px;
+            margin-bottom: 10px;
+            line-height: 1.45;
         }
         /* A second, quieter line: a strong candidate being filtered out is a
            different problem from a weak one, and should not look like the
@@ -310,9 +456,9 @@
         .verdict-note {
             display: block;
             font-weight: 500;
-            font-size: 10.5px;
-            opacity: 0.85;
-            margin-top: 2px;
+            font-size: 11px;
+            opacity: 0.9;
+            margin-top: 3px;
         }
         .verdict-good { background: var(--good-bg); color: var(--good-fg); }
         .verdict-mid  { background: var(--mid-bg);  color: var(--mid-fg); }
@@ -321,43 +467,52 @@
         /* Phrase-length gaps read better as a list than as pills. */
         .gap-list { margin: 0; padding: 0; list-style: none; }
         .gap-list li {
-            font-size: 11.5px;
-            line-height: 1.45;
-            color: var(--text);
-            padding: 3px 0 3px 14px;
+            font-size: 12px;
+            line-height: 1.5;
+            color: var(--text-soft);
+            padding: 5px 0 5px 16px;
             position: relative;
             border-bottom: 1px solid var(--hairline);
         }
         .gap-list li:last-child { border-bottom: none; }
         .gap-list li::before {
-            content: "•";
+            content: "";
             position: absolute;
-            left: 2px;
-            color: var(--danger);
+            left: 3px;
+            top: 11px;
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background: var(--danger);
+        }
+
+        .section-title {
+            font-size: 12px;
             font-weight: 700;
+            margin: 14px 0 2px;
+            letter-spacing: -0.005em;
         }
-
-        .section-title { font-size: 11.5px; font-weight: 700; margin: 12px 0 1px; }
         .section-hint {
-            font-size: 10.5px;
+            font-size: 11px;
             color: var(--muted);
-            line-height: 1.4;
-            margin: 0 0 6px;
+            line-height: 1.45;
+            margin: 0 0 8px;
         }
 
-        .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+        .chips { display: flex; flex-wrap: wrap; gap: 5px; }
         .chip {
-            font-size: 10.5px;
-            line-height: 1.5;
-            padding: 1px 7px;
-            border-radius: 10px;
+            font-size: 11px;
+            line-height: 1.6;
+            padding: 2px 9px;
+            border-radius: 999px;
             border: 1px solid var(--border);
             background: var(--surface-alt);
-            color: var(--text);
+            color: var(--text-soft);
+            font-weight: 500;
         }
         /* Two different kinds of absence, so they must not look alike: a
            requirement a person would probe, versus a string a filter greps. */
-        .chip-gap  { background: var(--low-bg); border-color: var(--low-fg); color: var(--low-fg); }
+        .chip-gap  { background: var(--low-bg); border-color: var(--low-bg); color: var(--low-fg); }
         .chip-term { background: var(--term-bg); border-color: var(--term-border); color: var(--term-fg); }
         .chip-more {
             background: transparent;
@@ -369,14 +524,14 @@
         .chip-more:hover { color: var(--accent); border-color: var(--accent); }
 
         .summary-box {
-            font-size: 11.5px;
-            line-height: 1.5;
-            color: var(--text);
+            font-size: 12px;
+            line-height: 1.55;
+            color: var(--text-soft);
             background: var(--surface);
             border: 1px solid var(--border);
-            border-radius: 6px;
-            padding: 7px 8px;
-            margin-top: 10px;
+            border-radius: 9px;
+            padding: 9px 11px;
+            margin-top: 12px;
         }
         .summary-box.clamped {
             display: -webkit-box;
@@ -385,11 +540,11 @@
             overflow: hidden;
         }
         .summary-toggle {
-            font-size: 10.5px;
+            font-size: 11px;
             font-weight: 600;
             color: var(--accent);
             cursor: pointer;
-            margin-top: 3px;
+            margin-top: 5px;
             display: inline-block;
         }
         .summary-toggle:hover { text-decoration: underline; }
@@ -398,7 +553,7 @@
 
 <body>
     <div class="header">
-        <h3>🤖 Job Copilot</h3>
+        <h3><span class="brand-dot" aria-hidden="true">TP</span>Talent Pilot</h3>
         <span id="open-dashboard" class="link">Dashboard ↗</span>
     </div>
 
