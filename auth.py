@@ -215,14 +215,27 @@ def normalize_email(email: str) -> str:
     return (email or "").strip().lower()
 
 
-def validate_credentials(email: str, password: str) -> str:
-    """Validate a new account's details, returning the normalized email."""
+def validate_email(email: str) -> str:
+    """Validate an address on its own, returning it normalized.
+
+    Split out of ``validate_credentials`` because changing the address on an
+    existing account is a real operation with no password in hand, and the two
+    checks would otherwise drift apart the first time either was edited.
+    """
     email = normalize_email(email)
 
     if not _EMAIL_RE.match(email):
         raise AuthError("Please enter a valid email address.")
     if len(email) > 254:
         raise AuthError("That email address is too long.")
+
+    return email
+
+
+def validate_credentials(email: str, password: str) -> str:
+    """Validate a new account's details, returning the normalized email."""
+    email = validate_email(email)
+
     if len(password or "") < MIN_PASSWORD_LENGTH:
         raise AuthError(
             f"Password must be at least {MIN_PASSWORD_LENGTH} characters long."
@@ -394,6 +407,68 @@ def change_password(
         conn.execute("DELETE FROM api_tokens WHERE user_id = ?", (int(user_id),))
 
     logger.info("Password changed for account id=%s; tokens revoked", user_id)
+
+
+def set_password(user_id: int, new_password: str, db_path=None) -> None:
+    """Set a password without presenting the old one, revoking every session.
+
+    The administrative counterpart of ``change_password``. It exists because a
+    person who has lost both their password and their recovery codes has an
+    account nobody can open — there is no reset email in this deployment — and
+    the only remaining fix used to be an UPDATE typed into sqlite3 over SSH,
+    which meant hashing the password by hand and getting it right.
+
+    Sessions are revoked for the same reason a self-service change revokes
+    them: whoever was signed in on the old password should not stay signed in.
+    """
+    if len(new_password or "") < MIN_PASSWORD_LENGTH:
+        raise AuthError(
+            f"Password must be at least {MIN_PASSWORD_LENGTH} characters long."
+        )
+    if len(new_password) > 1024:
+        raise AuthError("That password is too long.")
+
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM users WHERE id = ?", (int(user_id),)
+        ).fetchone()
+
+        if not row:
+            raise AuthError("No account with that id.")
+
+        conn.execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            (hash_password(new_password), int(user_id)),
+        )
+        conn.execute("DELETE FROM api_tokens WHERE user_id = ?", (int(user_id),))
+
+    logger.info("Password reset for account id=%s by administrator", user_id)
+
+
+def set_email(user_id: int, new_email: str, db_path=None) -> str:
+    """Change the address on an account, returning it normalized.
+
+    The workspace is keyed on the numeric id, so nothing on disk moves and
+    nothing the user has saved is affected — the address is only how they sign
+    in. Uniqueness is enforced by the column, not by a prior SELECT, so two
+    simultaneous renames cannot both succeed.
+    """
+    new_email = validate_email(new_email)
+
+    try:
+        with _connect(db_path) as conn:
+            cursor = conn.execute(
+                "UPDATE users SET email = ? WHERE id = ?",
+                (new_email, int(user_id)),
+            )
+
+            if cursor.rowcount == 0:
+                raise AuthError("No account with that id.")
+    except sqlite3.IntegrityError as exc:
+        raise AuthError("Another account already uses that address.") from exc
+
+    logger.info("Email changed for account id=%s by administrator", user_id)
+    return new_email
 
 
 # =====================================================================

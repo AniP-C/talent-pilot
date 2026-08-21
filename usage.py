@@ -53,6 +53,22 @@ EVENTS = (
 # Which events cost money, for the "billable" column of the report.
 PAID_EVENTS = (ANALYZE_JD, RESUME_UPLOAD, ANSWER_DRAFT, EMAIL_SYNC)
 
+# How the events are labelled and ordered wherever they are shown to a person.
+# Kept apart from EVENTS above so a report can be reordered for readability
+# without touching what is recorded — and kept here rather than in either
+# reader, because there are now two of them (deploy/usage_report.py and the
+# admin panel) and a column called "Analyses" in one and "Analysed" in the
+# other would be a bug nobody notices until the numbers are compared.
+REPORT_COLUMNS = (
+    ("CV uploads", RESUME_UPLOAD),
+    ("Analyses", ANALYZE_JD),
+    ("Answers", ANSWER_DRAFT),
+    ("Emails synced", EMAIL_SYNC),
+    ("Keyword scans", KEYWORD_SCAN),
+    ("Jobs saved", JOB_SAVE),
+    ("Sign-ins", SIGN_IN),
+)
+
 # Where the action came from. Worth separating: if the extension drives most of
 # the paid calls, pricing the dashboard alone would miss the cost entirely.
 SOURCES = ("dashboard", "extension", "api", "sync")

@@ -1,5 +1,14 @@
 # Who is using Talent Pilot, and how much
 
+> **The quick way is the admin panel.** Sign in to the dashboard as an address
+> in `ADMIN_EMAILS` and the **🛡️ Admin** tab answers every question on this
+> page — live, with a window selector and the same CSV — under **Overview** and
+> **Usage**. See [OPERATIONS.md](OPERATIONS.md#the-admin-panel).
+>
+> The commands below are the same numbers without a browser. Keep them for
+> scripting, for piping into something else, and for the day the dashboard is
+> the thing that is broken.
+
 Every command here is **read-only**. Nothing on this page changes or deletes
 anything; the destructive account operations live in
 [OPERATIONS.md](OPERATIONS.md) and are deliberately kept apart from the ones

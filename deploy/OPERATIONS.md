@@ -3,6 +3,12 @@
 Every command needed to look after the running deployment: reading logs,
 rotating the invite code, inspecting the database, restarting services.
 
+> **Most of this is now a page, not a command.** The dashboard has an
+> [admin panel](#the-admin-panel) covering accounts, usage, settings, backups,
+> logs and restarts. This document remains the reference, the fallback for
+> when the dashboard itself is what is broken, and the home of the few
+> operations deliberately left to a shell.
+
 Adjacent documents: [PUSH_TO_GCLOUD.md](PUSH_TO_GCLOUD.md) is how new code gets
 onto the server, [DEPLOYMENT.md](../DEPLOYMENT.md) is first-time setup, and
 [README.md](../README.md) is the overview.
@@ -16,6 +22,7 @@ onto the server, [DEPLOYMENT.md](../DEPLOYMENT.md) is first-time setup, and
 
 ## Contents
 
+- [The admin panel](#the-admin-panel)
 - [Connecting](#connecting)
 - [Where everything lives](#where-everything-lives)
 - [Services](#services)
@@ -31,6 +38,71 @@ onto the server, [DEPLOYMENT.md](../DEPLOYMENT.md) is first-time setup, and
 - [The extension package](#the-extension-package)
 - [Data repair](#data-repair)
 - [When something is broken](#when-something-is-broken)
+
+---
+
+## The admin panel
+
+Sign in to the dashboard with an address listed in `ADMIN_EMAILS` and a
+**🛡️ Admin** tab appears. It runs on the server, beside the databases, so
+everything it shows is live — there is no copy to go stale.
+
+| Tab | Answers |
+| --- | --- |
+| **Overview** | How many accounts, how many active, what registration is set to, which services are up |
+| **Accounts** | Every account with its usage, sessions, recovery codes and disk use; rename, reset a password, issue recovery codes, sign out devices, clear a lockout, disconnect Gmail, export, delete |
+| **Usage** | The live version of [USERS_AND_USAGE.md](USERS_AND_USAGE.md), including the CSV |
+| **Server** | Disk, memory, load, uptime; restart a service; edit settings; take and list backups; read any log with a filter |
+| **Audit log** | Every change made through the panel — who, what, when |
+
+Naming an administrator is deliberately not something the panel can do:
+
+```bash
+sudo nano /etc/talent-pilot/talent-pilot.env    # ADMIN_EMAILS=you@example.com
+sudo systemctl restart talent-pilot-api talent-pilot-dashboard
+```
+
+Editing that file is the same access as taking a backup or reading the
+database, which is the right bar for something that can delete any account. A
+flag in the database would mean one stolen admin session is enough to appoint
+more admins — using the panel itself to do it.
+
+### Enabling server actions in the panel
+
+Reading works immediately. The four buttons that need root — restart, save a
+setting, take a backup — stay disabled until a sudoers rule permits them. Run
+this once, on the server:
+
+```bash
+cd /opt/talent-pilot
+sudo install -m 755 deploy/talent-pilot-envset /usr/local/bin/talent-pilot-envset
+sudo install -m 440 -o root -g root deploy/talent-pilot-admin.sudoers /etc/sudoers.d/talent-pilot-admin
+sudo visudo -c
+sudo systemctl restart talent-pilot-dashboard
+```
+
+`visudo -c` is not optional. A syntax error anywhere under `/etc/sudoers.d`
+breaks `sudo` for every user on the machine, including the one you would use to
+fix it. If it reports a problem, delete the file before logging out:
+
+```bash
+sudo rm /etc/sudoers.d/talent-pilot-admin
+```
+
+The rule grants the `talentpilot` service account exactly three commands:
+restarting the three managed units, `/usr/local/bin/talent-pilot-backup`, and
+`/usr/local/bin/talent-pilot-envset`. No shell, no editor, no general
+`systemctl`. The helper takes one setting at a time from a fixed list —
+`ADMIN_EMAILS` is not on it, so the panel cannot appoint an administrator even
+with root behind it.
+
+Fresh installs get all of this from `deploy/setup.sh` already.
+
+### What the panel deliberately will not do
+
+Restoring a backup, editing the Caddyfile, and running the data-repair scripts.
+Each stops services, unpacks over live data, or rewrites rows in bulk — and the
+right place to be when doing that is a shell where you can see what happened.
 
 ---
 
@@ -74,6 +146,9 @@ should run as it (`sudo -u talentpilot …`), or ownership breaks.
 ---
 
 ## Services
+
+> In the panel: **Server → Services**, with a Restart button each and their
+> live state.
 
 Three units: the API on 8000, the dashboard on 8501, and Caddy in front.
 
@@ -140,12 +215,18 @@ sudo grep '<request-id>' /var/log/talent-pilot/app.log
 
 ### Without SSH
 
-The dashboard's **📜 Activity** tab shows recent stage changes and the sync log,
-with a decisions-only filter. That covers most questions.
+The admin panel's **Server → Logs** reads any of the three files with a line
+count and a text filter — the same output as the `tail` and `grep` above.
+
+For a user's own view, the dashboard's **📜 Activity** tab shows recent stage
+changes and the sync log with a decisions-only filter.
 
 ---
 
 ## The invite code and registration
+
+> In the panel: **Overview** shows the current code and whether registration
+> is open; **Server → Settings** rotates it or closes registration outright.
 
 Registration is gated by `SIGNUP_CODE`. Without it, anyone who can reach the
 server can sign up and spend your Gemini quota.
@@ -191,6 +272,11 @@ curl -s https://katchjobs.online/health
 
 ## Environment settings
 
+> In the panel: **Server → Settings** edits the ten settings that are safe to
+> change from a browser, and says a restart is needed afterwards. `PUBLIC_URL`,
+> `TRUST_PROXY_HEADERS`, `DATA_DIR` and `ADMIN_EMAILS` are only here, on
+> purpose.
+
 Everything configurable lives in one file:
 
 ```bash
@@ -222,6 +308,12 @@ The file is `chmod 640`, owned `root:talentpilot`. Keep it that way.
 ---
 
 ## Accounts
+
+> **In the panel: Accounts.** Everything below is a button there, with a typed
+> confirmation before a deletion and a row in the audit log afterwards — which
+> is the difference that matters. A DELETE typed into `sqlite3` over SSH leaves
+> no record that it happened, and a mistyped `WHERE` removes the wrong person
+> silently. Prefer the panel; keep these for when the dashboard is down.
 
 > **Looking for who is using it and how much?** That is
 > [USERS_AND_USAGE.md](USERS_AND_USAGE.md) — every command there is read-only.
@@ -319,6 +411,9 @@ That makes the next sync pay for those emails again. Mind the Gemini quota.
 
 ## Backups and restore
 
+> In the panel: **Server → Backups** takes one and lists what is on disk.
+> Restoring stays here — it stops both services and unpacks over live data.
+
 Take one now:
 
 ```bash
@@ -386,6 +481,9 @@ sudo journalctl -u caddy --since "24 hours ago" | grep -i "certificate\|acme\|er
 ---
 
 ## Machine health
+
+> In the panel: **Server → Machine** shows disk, memory, load and uptime, and
+> warns when memory passes 90%.
 
 An `e2-micro` has 1 GB of RAM and runs three services. Memory is the tightest
 resource and the usual cause of a mysterious restart.

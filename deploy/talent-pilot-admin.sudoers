@@ -1,0 +1,39 @@
+# Privileges for the admin panel's server actions.
+#
+# Install with:
+#   sudo install -m 440 -o root -g root \
+#       deploy/talent-pilot-admin.sudoers /etc/sudoers.d/talent-pilot-admin
+#   sudo visudo -c
+#
+# `visudo -c` is not optional. A syntax error anywhere under /etc/sudoers.d
+# breaks sudo for every user on the machine, including the one that would be
+# used to fix it.
+#
+# What this grants: the unprivileged `talentpilot` service account may restart
+# the three managed units, take a backup, and set one allowlisted environment
+# key — and nothing else. No shell, no editor, no package manager, no general
+# systemctl. Each entry names its full argument list, so `systemctl restart
+# talent-pilot-api` is permitted while `systemctl restart sshd` is not.
+#
+# Without this file the panel still works. It reads health, settings, logs and
+# every account exactly as before, and the four buttons that need root are
+# disabled with an explanation. That is the intended state for any machine
+# where the dashboard is not the thing being administered.
+
+Cmnd_Alias TALENT_PILOT_RESTART = \
+    /usr/bin/systemctl restart talent-pilot-api, \
+    /usr/bin/systemctl restart talent-pilot-dashboard, \
+    /usr/bin/systemctl restart caddy, \
+    /bin/systemctl restart talent-pilot-api, \
+    /bin/systemctl restart talent-pilot-dashboard, \
+    /bin/systemctl restart caddy
+
+Cmnd_Alias TALENT_PILOT_BACKUP = /usr/local/bin/talent-pilot-backup
+
+Cmnd_Alias TALENT_PILOT_ENVSET = /usr/local/bin/talent-pilot-envset
+
+# Both paths are listed above because sudoers matches the command as it is
+# resolved, and /bin is a symlink to /usr/bin on current Debian and Ubuntu:
+# whichever one PATH produces has to appear here or the rule silently misses.
+
+talentpilot ALL=(root) NOPASSWD: TALENT_PILOT_RESTART, TALENT_PILOT_BACKUP, TALENT_PILOT_ENVSET

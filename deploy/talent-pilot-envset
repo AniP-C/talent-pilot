@@ -1,0 +1,103 @@
+#!/bin/bash
+# Set one environment setting, for the admin panel.
+#
+# Installed to /usr/local/bin/talent-pilot-envset and reachable from the
+# unprivileged service account through exactly one sudoers line. That is the
+# whole point of it existing: /etc/talent-pilot/talent-pilot.env holds the
+# Gemini key and the invite code, and it must stay root-owned. Making it
+# group-writable so the dashboard could edit it directly would mean any flaw
+# in a Python web app is a path to both secrets.
+#
+# So the file stays 640 root:talentpilot, and this script is the only way in —
+# one key at a time, from a fixed list, with the value written verbatim and
+# nothing else in the file touched.
+#
+# The allowlist below is deliberately a second copy of the one in sysops.py.
+# Duplication is the point: this is the boundary that still holds when the
+# Python side is wrong, and a boundary that trusts its caller is not one.
+#
+#   Usage: talent-pilot-envset KEY VALUE
+
+set -euo pipefail
+
+ENV_FILE="${ENV_FILE:-/etc/talent-pilot/talent-pilot.env}"
+
+# Note what is absent: ADMIN_EMAILS. Whoever may open the panel is decided by
+# editing this file as root, never by the panel itself — otherwise one stolen
+# admin session is enough to mint more administrators, and the panel is exactly
+# the tool that would be used to do it. PUBLIC_URL and DATA_DIR are absent for
+# a duller reason: getting either wrong breaks the deployment in a way the
+# panel cannot detect or undo.
+ALLOWED=(
+    SIGNUP_CODE
+    REGISTRATION_CLOSED
+    GEMINI_API_KEY
+    GEMINI_MODEL
+    GMAIL_LOOKBACK_DAYS
+    GMAIL_MAX_RESULTS
+    GMAIL_THROTTLE_SECONDS
+    MAX_LOGIN_ATTEMPTS
+    LOGIN_LOCKOUT_MINUTES
+    LOG_LEVEL
+)
+
+die() {
+    echo "talent-pilot-envset: $*" >&2
+    exit 1
+}
+
+[ "$#" -eq 2 ] || die "usage: talent-pilot-envset KEY VALUE"
+
+KEY="$1"
+VALUE="$2"
+
+[[ "$KEY" =~ ^[A-Z][A-Z0-9_]*$ ]] || die "key must be upper-case letters, digits and underscores"
+
+permitted=0
+for allowed in "${ALLOWED[@]}"; do
+    [ "$KEY" = "$allowed" ] && permitted=1 && break
+done
+[ "$permitted" -eq 1 ] || die "$KEY is not a setting this helper may change"
+
+# A newline in the value would append a second line to the file and so set a
+# key that is not on the list above. Command-line arguments can contain one.
+case "$VALUE" in
+    *$'\n'* | *$'\r'*) die "value may not contain a line break" ;;
+esac
+
+[ "${#VALUE}" -le 512 ] || die "value is too long"
+[ -f "$ENV_FILE" ] || die "$ENV_FILE does not exist"
+
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+
+# Replace the first occurrence in place and drop any later duplicates, so the
+# file keeps its grouping and comments, and there is no question afterwards
+# about which of two lines wins.
+replaced=0
+
+while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+        "$KEY"=*)
+            if [ "$replaced" -eq 0 ]; then
+                printf '%s=%s\n' "$KEY" "$VALUE" >> "$tmp"
+                replaced=1
+            fi
+            ;;
+        *)
+            printf '%s\n' "$line" >> "$tmp"
+            ;;
+    esac
+done < "$ENV_FILE"
+
+if [ "$replaced" -eq 0 ]; then
+    printf '%s=%s\n' "$KEY" "$VALUE" >> "$tmp"
+fi
+
+# Copied *into* the existing file rather than moved over it, so the inode, its
+# 640 permissions and its root:talentpilot ownership all survive. A mv here
+# would leave the file owned by root:root and mode 600, and the services would
+# stop being able to read their own configuration.
+cat "$tmp" > "$ENV_FILE"
+
+echo "$KEY updated in $ENV_FILE"

@@ -31,6 +31,8 @@ one is the complete functional description.
 14. [Gmail inbox sync](#14-gmail-inbox-sync)
 15. [Recruiter contacts](#15-recruiter-contacts)
 16. [Activity log](#16-activity-log)
+16b. [Usage metering](#16b-usage-metering)
+16c. [The admin panel](#16c-the-admin-panel)
 17. [Settings and operations](#17-settings-and-operations)
 18. [Privacy and security](#18-privacy-and-security)
 19. [Known limits](#19-known-limits)
@@ -759,6 +761,59 @@ deliberately not a second copy of anyone's data.
 **Where it lives.** The central accounts database, because the question is
 asked across all accounts at once. Metering failures are logged and swallowed:
 a full disk must never turn a successful analysis into an error the user sees.
+
+---
+
+## 16c. The admin panel
+
+**What it is.** An extra tab in the dashboard, shown only to the addresses in
+`ADMIN_EMAILS`, holding every operation that used to require an SSH session and
+a remembered `sqlite3` invocation.
+
+**Why it exists.** Two reasons, and the second one matters more.
+
+The first is reach: the answer to "who signed up this week?" or "is the API
+up?" lived behind `gcloud compute ssh`, which in practice meant it was only
+ever asked from one laptop, and not often.
+
+The second is that deleting an account by hand leaves no trace. A `DELETE`
+typed against production has no undo, no confirmation, and afterwards nothing
+anywhere records that it happened or who did it. Every state-changing action in
+the panel writes a row naming the administrator, the action and the target —
+and a deletion's row is kept when the account it refers to is gone, since it is
+then the only evidence the account ever existed.
+
+**What it shows.** Accounts with their usage, sessions, recovery codes, Gmail
+state and disk use; the usage report with a window selector and CSV; disk,
+memory, load and uptime; service state; the environment settings; backups; and
+any of the three log files with a filter.
+
+**What it changes.** Rename an account, reset a password, issue recovery codes,
+sign out every device, clear a lockout, disconnect Gmail, export, delete.
+Restart a service, rotate the invite code, close registration, change the model
+or the sync limits, take a backup.
+
+**Live by construction.** The panel runs on the server beside the databases and
+nothing on the page is cached — a stale answer to "did that account get
+deleted?" is worse than a slow one, and at this size the read is milliseconds.
+
+**Where the limits are drawn.**
+
+- *Administrators are named in the environment file, never in the database.*
+  The panel can delete any account and restart the machine, so granting that
+  should cost what taking a backup costs. A database flag would mean one stolen
+  admin session is enough to appoint more admins — using the panel to do it.
+- *`ADMIN_EMAILS` is the one setting the panel cannot write*, enforced twice:
+  in the Python allowlist and again in the root-owned shell helper.
+- *Privilege is three commands.* The dashboard runs unprivileged and reaches
+  root only through a sudoers rule naming each permitted command with its full
+  arguments. Nothing is interpolated into a shell.
+- *An export leaves the Gmail token behind.* It is a live key to somebody's
+  mailbox, not a record of their data.
+- *Restoring a backup, editing Caddy and bulk data repair stay in a shell*,
+  because they stop services or rewrite rows in bulk.
+- *A deletion needs the account's address typed out* and an acknowledgement
+  that a copy was taken.
 
 ---
 

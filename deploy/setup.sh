@@ -120,6 +120,11 @@ SIGNUP_CODE=${GENERATED_CODE}
 # Set true only because Caddy sits in front and overwrites X-Forwarded-For.
 TRUST_PROXY_HEADERS=true
 
+# Who may open the admin panel, comma-separated. Left empty on purpose: the
+# panel appears for nobody until a real address is put here, and this file is
+# the only place it can be granted.
+ADMIN_EMAILS=
+
 DATA_DIR=${DATA_DIR}
 LOG_DIR=${LOG_DIR}
 LOG_LEVEL=INFO
@@ -158,6 +163,24 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 20 3 * * * root /usr/local/bin/talent-pilot-backup 2>&1 | logger -t talent-pilot-backup
 EOF
 chmod 644 /etc/cron.d/talent-pilot-backup
+
+# ---------------------------------------------------------------------
+info "Installing the admin panel's server privileges"
+# ---------------------------------------------------------------------
+# Lets the admin panel restart services, take a backup and change a setting
+# without an SSH session. Narrow by construction: the sudoers file names each
+# permitted command with its full arguments, and the envset helper accepts one
+# key at a time from a fixed list.
+install -m 755 "${REPO_ROOT}/deploy/talent-pilot-envset" /usr/local/bin/talent-pilot-envset
+install -m 440 -o root -g root     "${REPO_ROOT}/deploy/talent-pilot-admin.sudoers" /etc/sudoers.d/talent-pilot-admin
+
+# Checked immediately, and the file removed if it is bad. A syntax error under
+# /etc/sudoers.d breaks sudo for every user on the machine — including the one
+# that would be used to repair it.
+if ! visudo -c &>/dev/null; then
+    rm -f /etc/sudoers.d/talent-pilot-admin
+    warn "sudoers rule rejected and removed — the panel's server buttons will stay disabled."
+fi
 
 # ---------------------------------------------------------------------
 info "Configuring Caddy"
@@ -234,14 +257,18 @@ echo
 info "Done."
 echo
 echo "  1. Add your Gemini key:  sudo nano ${ENV_FILE}"
-echo "  2. Restart:              sudo systemctl restart talent-pilot-api talent-pilot-dashboard"
+echo "  2. Name yourself admin:  set ADMIN_EMAILS= to your address in the same file"
+echo "  3. Restart:              sudo systemctl restart talent-pilot-api talent-pilot-dashboard"
 if [[ "$DOMAIN" != "--no-domain" ]]; then
-    echo "  3. Open:                 https://${DOMAIN}"
-    echo "  4. Register the OAuth redirect URI in Google Cloud:"
+    echo "  4. Open:                 https://${DOMAIN}"
+    echo "  5. Register the OAuth redirect URI in Google Cloud:"
     echo "                           https://${DOMAIN}/"
 else
-    echo "  3. Open:                 http://\$(curl -s ifconfig.me)"
+    echo "  4. Open:                 http://\$(curl -s ifconfig.me)"
 fi
+echo
+echo "  Once signed in as that address, the 🛡️ Admin tab holds the accounts,"
+echo "  usage, settings, backups and logs — no SSH needed for any of it."
 echo
 echo "  Invite code:  grep SIGNUP_CODE ${ENV_FILE}"
 echo "  Logs:         journalctl -u talent-pilot-api -f"

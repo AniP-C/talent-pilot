@@ -10,6 +10,8 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+import admin
+import admin_ui
 import auth
 import autofill
 import db
@@ -1537,6 +1539,26 @@ def main() -> None:
     setup = autofill.completeness(user.id)
     answers_badge = f" ({setup['missing']})" if setup["missing"] else ""
 
+    labels = [
+        "📊 Dashboard",
+        "➕ Add application",
+        "🧠 Analyzer",
+        "📄 Profiles",
+        f"📝 Application answers{answers_badge}",
+        "📜 Activity",
+        "⚙️ Settings",
+    ]
+
+    # The admin tab is not created at all for anyone else, rather than created
+    # and then refused. A tab that exists and says "not for you" tells every
+    # user on the instance that there is a panel to go looking for.
+    show_admin = admin.is_admin(user.email)
+
+    if show_admin:
+        labels.append("🛡️ Admin")
+
+    tabs = st.tabs(labels)
+
     (
         dashboard_tab,
         add_tab,
@@ -1545,17 +1567,7 @@ def main() -> None:
         answers_tab,
         activity_tab,
         settings_tab,
-    ) = st.tabs(
-        [
-            "📊 Dashboard",
-            "➕ Add application",
-            "🧠 Analyzer",
-            "📄 Profiles",
-            f"📝 Application answers{answers_badge}",
-            "📜 Activity",
-            "⚙️ Settings",
-        ]
-    )
+    ) = tabs[:7]
 
     with dashboard_tab:
         render_dashboard(user, db_path)
@@ -1571,6 +1583,10 @@ def main() -> None:
         render_activity(user, db_path)
     with settings_tab:
         render_settings(user)
+
+    if show_admin:
+        with tabs[7]:
+            admin_ui.render(user)
 
 
 main()

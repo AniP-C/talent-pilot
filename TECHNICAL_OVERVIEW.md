@@ -76,6 +76,9 @@ flowchart LR
 |-- ui.py                   Dashboard styling and render helpers
 |-- auth.py                 Accounts, password hashing, recovery codes, API tokens
 |-- usage.py                Per-account metering: what was used, and what it cost
+|-- admin.py                Accounts, audit trail, administrative actions
+|-- admin_ui.py             The admin panel, rendered
+|-- sysops.py               Services, settings, backups, logs, machine health
 |-- deploy/calibrate.py     Runs fixtures against the live model, prints the spread
 |-- workspace.py            Per-user paths and path-traversal defences
 |-- db.py                   Job storage (per workspace)
@@ -107,6 +110,8 @@ flowchart LR
 |   |-- test_auth.py
 |   |-- test_db.py
 |   |-- test_workspace.py
+|   |-- test_admin.py
+|   |-- test_sysops.py
 |   |-- test_email_pipeline.py
 |   `-- test_api.py
 |-- data/                   Accounts + per-user workspaces (gitignored)

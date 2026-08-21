@@ -295,6 +295,7 @@ graph LR
 - 📬 Gmail sync with recruiter email classification
 - 🧩 Chrome extension for live job-page detection
 - 💾 Local SQLite storage, isolated per account
+- 🛡️ Admin panel: every account, live usage, server settings, backups and logs
 - 🧪 Test suite covering auth, storage, path safety, and API contracts
 - 🔐 Git-safe setup with ignored secrets, tokens, resumes, logs, and databases
 
@@ -344,6 +345,10 @@ names the account — so a caller cannot act on someone else's workspace.
 ├── app.py                    # Streamlit dashboard 🚀
 ├── ui.py                     # Dashboard styling and render helpers 🎨
 ├── auth.py                   # Registration, sign-in, password hashing, tokens 🔑
+├── admin.py                  # Accounts, audit trail, administrative actions 🛡️
+├── admin_ui.py               # The admin panel, rendered 🖥️
+├── sysops.py                 # Services, settings, backups, logs, health 🔧
+├── usage.py                  # Per-account metering: what was used, what it cost 📊
 ├── workspace.py              # Per-user paths and path-traversal defences 📂
 ├── db.py                     # SQLite job storage 🗃️
 ├── contacts.py               # Who to reply to, chosen from one email 📇

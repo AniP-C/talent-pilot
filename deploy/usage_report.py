@@ -12,9 +12,15 @@ Run on the server, where the accounts database lives:
     # machine-readable, for a spreadsheet
     ... deploy/usage_report.py --csv > usage.csv
 
-Written as a script rather than a dashboard page on purpose: it reads every
-account's activity, which is not something a signed-in user should be able to
-reach by guessing a URL. Access to it is access to the server.
+The same numbers now appear in the dashboard's admin panel, which is the
+easier way to read them. This stays because it needs nothing but a shell: it
+still answers when the dashboard is the thing that is broken, and it is what
+pipes into a spreadsheet or a cron job.
+
+What has not changed is who may see it. The panel is gated on ADMIN_EMAILS,
+which only someone who can edit the root-owned environment file may set — so
+reaching either version of this report still costs server access, and no
+ordinary signed-in user can find it by guessing a URL.
 """
 
 import argparse
@@ -28,17 +34,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import usage  # noqa: E402  - after the path insert
 
 
-# Column order for the table. Kept apart from usage.EVENTS so the report can be
-# reordered for readability without touching what is recorded.
-COLUMNS = [
-    ("CV uploads", usage.RESUME_UPLOAD),
-    ("Analyses", usage.ANALYZE_JD),
-    ("Answers", usage.ANSWER_DRAFT),
-    ("Emails synced", usage.EMAIL_SYNC),
-    ("Keyword scans", usage.KEYWORD_SCAN),
-    ("Jobs saved", usage.JOB_SAVE),
-    ("Sign-ins", usage.SIGN_IN),
-]
+# Column order for the table, shared with the admin panel so the two cannot
+# label the same number differently.
+COLUMNS = usage.REPORT_COLUMNS
 
 
 def render_table(accounts: list[dict], days) -> None:

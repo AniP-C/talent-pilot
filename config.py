@@ -161,6 +161,45 @@ LOGIN_LOCKOUT_MINUTES = int(os.getenv("LOGIN_LOCKOUT_MINUTES", "15"))
 TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "false").lower() == "true"
 
 # =====================================================================
+# ADMINISTRATION
+# =====================================================================
+# Who may open the admin panel: comma-separated addresses, matched
+# case-insensitively against the signed-in account.
+#
+# Deliberately an environment setting rather than a column on the users table.
+# The panel can rename an account, reset its password, delete it outright and
+# restart the machine, so granting that power should cost what taking a backup
+# costs — a shell on the server and the ability to edit this file. A database
+# flag would mean one stolen admin session is enough to mint more admins, and
+# the panel is the very thing that would be used to do it.
+ADMIN_EMAILS = frozenset(
+    part.strip().lower()
+    for part in os.getenv("ADMIN_EMAILS", "").split(",")
+    if part.strip()
+)
+
+# The environment file the running services read. Editing it from the panel is
+# what makes "rotate the invite code" something other than an SSH session.
+# Points at the deployed location by default; a local checkout overrides it (or
+# simply has no such file, in which case the settings section says so).
+ENV_FILE_PATH = Path(
+    os.getenv("ENV_FILE_PATH") or "/etc/talent-pilot/talent-pilot.env"
+)
+
+# Where the nightly archive script leaves its output, and the two privileged
+# helpers the panel is allowed to invoke through sudo. Both are installed by
+# deploy/setup.sh; when they are absent the panel degrades to read-only rather
+# than failing, which is what running locally looks like.
+BACKUP_DIR = Path(os.getenv("BACKUP_DIR") or "/var/backups/talent-pilot")
+BACKUP_COMMAND = os.getenv("BACKUP_COMMAND") or "/usr/local/bin/talent-pilot-backup"
+ENVSET_COMMAND = os.getenv("ENVSET_COMMAND") or "/usr/local/bin/talent-pilot-envset"
+
+# The units the panel may report on and restart. An allowlist rather than a
+# free-text field: the service name is interpolated into a sudo call, and the
+# only safe way to do that is to refuse anything not named here.
+MANAGED_SERVICES = ("talent-pilot-api", "talent-pilot-dashboard", "caddy")
+
+# =====================================================================
 # GMAIL SYNC
 # =====================================================================
 GMAIL_MAX_RESULTS = int(os.getenv("GMAIL_MAX_RESULTS", "25"))
