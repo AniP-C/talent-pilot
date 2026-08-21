@@ -13,6 +13,13 @@ docker-compose.yml text eol=lf
 *.yml           text eol=lf
 *.yaml          text eol=lf
 
+# The admin panel's privileged helpers. Neither has an extension the rules
+# above match, so both fell under `* text=auto` and reached the server with
+# CRLF: visudo rejected the sudoers file, and the helper died on
+# `/bin/bash^M: bad interpreter` — the exact failure this section warns about.
+*.sudoers           text eol=lf
+talent-pilot-envset text eol=lf
+
 # Binary — never touch these.
 *.png binary
 *.jpg binary
