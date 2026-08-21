@@ -71,6 +71,23 @@ def inject_styles() -> None:
 NOT_STATED = "NA"
 
 
+def percentage(value) -> str:
+    """A stored score as a percentage, or "" when there is no score.
+
+    Blank rather than NOT_STATED, unlike the other absent values here. A
+    missing salary is something the posting failed to say; a missing score is
+    something the user has not asked for yet, and filling the column with "NA"
+    would suggest an analysis had been run and come back empty.
+    """
+    if value is None:
+        return ""
+
+    try:
+        return f"{int(value)}%"
+    except (TypeError, ValueError):
+        return ""
+
+
 def status_label(status: str) -> str:
     """Human-friendly label with a colour dot for a status code."""
     return STATUS_LABELS.get(status, status)

@@ -5,16 +5,23 @@ one person's saved answers never leak into another person's drafts.
 """
 
 import os
+import re
 import sys
+from typing import Optional
 
 from pydantic import BaseModel
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import autofill
 import posting
 import scoring
 import workspace
-from ai.gemini import DRAFTING_TEMPERATURE, generate_structured
+from ai.gemini import (
+    CLASSIFICATION_TEMPERATURE,
+    DRAFTING_TEMPERATURE,
+    generate_structured,
+)
 from config import logger
 
 # =====================================================================
@@ -82,7 +89,25 @@ class StructuredResume(BaseModel):
 # this one mapping, so a saved answer is always found again later.
 ANSWER_CATEGORIES = [
     (("about yourself", "about you", "background", "introduce"), "about_me.txt"),
-    (("why this company", "why do you want", "why are you interested"), "why_company.txt"),
+    # "What interests you about working for this company?" matched none of the
+    # original three phrasings and fell into the general bucket, where it was
+    # then fed back as an exemplar for unrelated questions. The employer asks
+    # this a dozen ways; the bucket has to recognise more than three.
+    (
+        (
+            "why this company",
+            "why do you want",
+            "why are you interested",
+            "interests you about",
+            "interest you about",
+            "excites you about",
+            "attracted you",
+            "why us",
+            "why join",
+            "why work",
+        ),
+        "why_company.txt",
+    ),
     (("challenge", "difficult", "hardest", "proud"), "challenging_project.txt"),
     (("weakness", "improve", "shortcoming"), "weaknesses.txt"),
     (("strength", "good at"), "strengths.txt"),
@@ -113,10 +138,69 @@ def load_answer_memory(user_id: int, question: str) -> tuple[str, str]:
         return "", "none"
 
     try:
-        return path.read_text(encoding="utf-8").strip(), filename
+        stored = path.read_text(encoding="utf-8").strip()
     except OSError as exc:
         logger.error("Could not read answer memory %s: %s", filename, exc)
         return "", "none"
+
+    if filename == DEFAULT_ANSWER_FILE:
+        # general.txt is where every uncategorised question ends up, so it is a
+        # grab-bag rather than a theme. Handing the whole file back as "answers
+        # like yours" is how one generic paragraph became the house style: it
+        # was offered as the model for questions it had nothing to do with,
+        # and every accepted draft appended another copy of it. Only entries
+        # that share real words with the question asked are relevant.
+        stored = _entries_resembling(stored, question)
+
+    return stored.strip(), filename if stored.strip() else "none"
+
+
+# ``--- Q: <question> ---`` is the separator save_answer_to_memory writes.
+_ENTRY_HEADER = re.compile(r"^--- Q: (.*?) ---$", re.MULTILINE)
+
+# Words too common to mean two questions are about the same thing. Without
+# these, "you" and "your" alone make everything resemble everything.
+_COMMON_WORDS = frozenset(
+    {
+        "about", "would", "your", "yours", "you", "with", "what", "when", "this",
+        "that", "there", "their", "them", "they", "have", "has", "here", "from",
+        "into", "please", "tell", "describe", "explain", "mention", "give",
+        "provide", "role", "job", "position", "company", "work", "working",
+        "candidate", "applicant", "application", "answer", "question", "does",
+        "did", "are", "were", "will", "shall", "should", "could", "must",
+    }
+)
+
+
+def _keywords(text: str) -> set[str]:
+    """The words in a question that carry its subject."""
+    return {
+        word for word in re.findall(r"[a-z]{4,}", (text or "").lower())
+    } - _COMMON_WORDS
+
+
+def _entries_resembling(stored: str, question: str) -> str:
+    """Keep only the saved entries whose question shares subject words.
+
+    Deliberately a word overlap rather than anything cleverer. The job is to
+    exclude an answer about notice periods from a question about motivation,
+    and one shared uncommon word does that; the cost of being slightly too
+    strict is a draft with less context, which is the safer failure.
+    """
+    wanted = _keywords(question)
+
+    if not wanted:
+        return ""
+
+    # split() on a capturing pattern gives [preamble, q1, a1, q2, a2, ...].
+    parts = _ENTRY_HEADER.split(stored)
+    kept = [
+        f"--- Q: {recorded.strip()} ---\n{answer.strip()}"
+        for recorded, answer in zip(parts[1::2], parts[2::2])
+        if _keywords(recorded) & wanted
+    ]
+
+    return "\n\n".join(kept)
 
 
 def save_answer_to_memory(user_id: int, question: str, answer_text: str) -> str:
@@ -311,7 +395,220 @@ def analyze_jd(jd_text: str, resume_data: str, resume_text: str = "") -> dict:
     }
 
 
+# =====================================================================
+# WHAT SHAPE OF ANSWER A QUESTION WANTS
+# =====================================================================
+# Application forms mix two kinds of question and this code used to know only
+# one. "Are you based out in Pune? Mention Y/N" wants a single character;
+# "What interests you about working here?" wants a paragraph. Both were being
+# handed to a prompt that says "write a concise, professional, highly relevant
+# answer" over six thousand characters of resume — so both came back as the
+# same pitch, which is exactly what that prompt asked for.
+BRIEF = "brief"
+OPEN = "open"
+
+# Where the answer came from, so the caller can say so and can meter only
+# what actually cost a model call.
+FROM_PROFILE = "profile"
+FROM_MODEL = "model"
+NEEDS_PROFILE = "needs_profile"
+
+# The form says outright what it wants.
+_ASKS_YES_NO = re.compile(r"\by\s*/\s*n\b|\byes\s*/\s*no\b|\byes or no\b", re.IGNORECASE)
+
+# Prose, and says so. Checked before the fact patterns below because "why are
+# you interested" contains "are you" and is plainly not a yes/no question.
+_ASKS_FOR_PROSE = re.compile(
+    r"\bwhy\b|\bdescribe\b|\bexplain\b|tell\s+us|elaborate|walk\s+(us|me)"
+    r"|what\s+(interests|excites|attracted|motivates|appeals|draws)"
+    r"|in\s+your\s+own\s+words|cover\s+letter",
+    re.IGNORECASE,
+)
+
+# A short factual answer, whatever verb the question opens with. "If N, then is
+# your notice period less than 30 days?" opens with a conditional and is still
+# a yes/no question.
+_ASKS_FOR_A_FACT = re.compile(
+    r"how\s+(many|much|soon|long)|notice\s*period|expected\s+(ctc|salary|compensation)"
+    r"|current\s+(ctc|salary|compensation)|years?\s+of\s+experience|date\s+of\s+birth"
+    r"|when\s+can\s+you|available\s+to\s+(start|join)"
+    r"|\b(are|is|was|were|do|does|did|have|has|had|can|could|will|would|should)\s+(you|your)\b",
+    re.IGNORECASE,
+)
+
+# An interrogative that asks for the value itself rather than a yes or no.
+_WH_OPENER = re.compile(r"^\s*\W*(what|which|where|when|how|who)\b", re.IGNORECASE)
+
+# A construction whose answer is yes or no, used to decide whether a stored
+# fact can be handed over as-is. "Notice period?" is answered by "60 days";
+# "is your notice period less than 30 days?" is answered by "N".
+_CLOSED_CONSTRUCTION = re.compile(
+    r"\b(are|is|was|were|do|does|did|have|has|had|can|could|will|would|should)\s+(you|your)\b",
+    re.IGNORECASE,
+)
+
+
+def classify_question(question: str) -> str:
+    """Whether this question wants a word or a paragraph."""
+    text = (question or "").strip()
+
+    if not text:
+        return OPEN
+    if _ASKS_YES_NO.search(text):
+        return BRIEF
+    if _ASKS_FOR_PROSE.search(text):
+        return OPEN
+    if _ASKS_FOR_A_FACT.search(text):
+        return BRIEF
+
+    return OPEN
+
+
+def _saved_detail(user_id: int, question: str) -> Optional[dict]:
+    """The user's own saved answer to this question, if they have one.
+
+    autofill.py already holds their location, notice period, work
+    authorisation and the rest, matched by the same patterns the extension
+    uses in the page. Nothing here consulted it, so the app was paying a model
+    to invent a paragraph for questions its own profile could answer exactly
+    and for free.
+    """
+    try:
+        return autofill.match(question, autofill.build_rules(user_id))
+    except Exception as exc:  # noqa: BLE001 - a bad profile must not block drafting
+        logger.warning("Could not read saved details for user %s: %s", user_id, exc)
+        return None
+
+
+def _needs_restating(question: str, fact: dict) -> bool:
+    """Whether the stored value answers the question as it was asked.
+
+    "Notice period?" takes the stored value verbatim. "Is your notice period
+    less than 30 days?" does not — the honest answer is derived from it, and
+    handing over "60 days" where the form wants Y/N is a wrong answer in a box
+    that only accepts one character.
+    """
+    if fact.get("kind") == "yes_no":
+        return False
+    if _ASKS_YES_NO.search(question):
+        return True
+
+    # "What is your current location?" contains "is your" and is not a yes/no
+    # question — it asks for the value itself, which is sitting right there.
+    # Without this it went to the model to be told what it already knew.
+    if _WH_OPENER.match(question or ""):
+        return False
+
+    return bool(_CLOSED_CONSTRUCTION.search(question))
+
+
+def _restate_saved_detail(question: str, fact: dict) -> dict:
+    """Derive the answer to a closed question from one stored fact.
+
+    A deliberately tiny call: one fact and one question, no resume, no job
+    description, no answer memory. It cannot invent where the candidate lives
+    because the only thing it is given is where they live, and it is told to
+    say UNKNOWN rather than guess when the fact does not settle the question.
+    """
+    prompt = f"""
+    Answer one job-application question using a single saved fact about the
+    candidate. You have no other information about them.
+
+    SAVED FACT — {fact.get("question", "detail")}: {fact.get("answer", "")}
+    QUESTION: {question}
+
+    RULES:
+    1. Answer in as few words as the question allows. If it asks for Y/N,
+       answer exactly Y or N, with nothing after it.
+    2. Use only the saved fact. Never guess or infer anything else about them.
+    3. If the saved fact does not settle the question, reply with exactly:
+       UNKNOWN
+    """
+    result = generate_structured(
+        prompt, AnswerResponse, "BRIEF_ANSWER", temperature=CLASSIFICATION_TEMPERATURE
+    )
+
+    if "error" in result:
+        return result
+
+    answer = str(result.get("suggested_answer", "")).strip()
+
+    if not answer or answer.upper().startswith("UNKNOWN"):
+        return _no_saved_detail(question)
+
+    result["suggested_answer"] = answer
+    result["source"] = FROM_MODEL
+    result["billable"] = True
+    result["memory_used"] = f"saved detail: {fact.get('question', '')}"
+    return result
+
+
+def _no_saved_detail(question: str) -> dict:
+    """A factual question with nothing saved to answer it.
+
+    No model call. Where the candidate lives and how long their notice period
+    runs are facts about them, and a model that is asked to produce one will
+    produce a plausible one — which is worse than an empty box, because it is
+    wrong in a way nobody checks before submitting.
+    """
+    return {
+        "suggested_answer": "",
+        "confidence_score": 0,
+        "source": NEEDS_PROFILE,
+        "billable": False,
+        "memory_used": "none",
+        "message": (
+            "This asks for a fact about you rather than something that can be "
+            "written from your resume. Answer it once under Application "
+            "answers and it will be filled in automatically from then on."
+        ),
+    }
+
+
 def generate_smart_answer(
+    user_id: int,
+    question: str,
+    company: str,
+    role: str,
+    jd_text: str,
+    active_resume_str: str,
+) -> dict:
+    """Answer one application question, as cheaply as it can be answered well.
+
+    Three routes, in order of preference:
+
+    1. The user's own saved detail, returned verbatim — free and exact.
+    2. A closed question with nothing saved: say so, and do not call a model
+       to guess at a fact about somebody.
+    3. An open question: draft it, which is what this function used to do for
+       everything including "Mention Y/N".
+    """
+    shape = classify_question(question)
+    fact = _saved_detail(user_id, question)
+
+    # A custom entry is a question the user answered in their own words, so it
+    # is the answer whatever shape the question takes.
+    if fact and (shape == BRIEF or str(fact.get("key", "")).startswith("custom:")):
+        if not _needs_restating(question, fact):
+            return {
+                "suggested_answer": str(fact.get("answer", "")).strip(),
+                "confidence_score": 100,
+                "source": FROM_PROFILE,
+                "billable": False,
+                "memory_used": f"saved detail: {fact.get('question', '')}",
+            }
+
+        return _restate_saved_detail(question, fact)
+
+    if shape == BRIEF:
+        return _no_saved_detail(question)
+
+    return _draft_open_answer(
+        user_id, question, company, role, jd_text, active_resume_str
+    )
+
+
+def _draft_open_answer(
     user_id: int,
     question: str,
     company: str,
@@ -361,6 +658,10 @@ def generate_smart_answer(
     5. Answer the Target Question specifically. Where the job description names
        a requirement the resume can speak to, connect the two explicitly rather
        than describing the candidate in general terms.
+
+    Before answering, re-read the question: {question}
+    An answer that would fit equally well under a different question is the
+    wrong answer, however well written it is.
     """
     # The one call that wants variety rather than repeatability: the same
     # question asked twice should not come back as the same sentence.
@@ -370,6 +671,8 @@ def generate_smart_answer(
 
     if "error" not in result:
         result["memory_used"] = memory_file
+        result["source"] = FROM_MODEL
+        result["billable"] = True
 
     return result
 

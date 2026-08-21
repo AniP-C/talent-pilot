@@ -135,6 +135,10 @@ This flow shows how Talent Pilot connects browser context, resume profiles, AI a
 - Store company, role, job description, status, source, resume used, notes, and
   the posting's own location and salary
 - Filter applications by company, role, location, status, and remote-only
+- **Both scores on the row** — recruiter fit and keyword coverage are saved
+  with the application when you analyse it, so the table answers "which of
+  these am I actually a fit for?" without reopening anything. Blank until the
+  application has been analysed, which is a different thing from zero
 - Export selected applications as CSV
 - **Needs a nudge** — live applications that have gone quiet, longest silence
   first, measured from the last real signal (an email from the employer, a
@@ -153,6 +157,11 @@ This flow shows how Talent Pilot connects browser context, resume profiles, AI a
 - **On request** — Gemini classifies every requirement the posting states, and
   [scoring.py](scoring.py) turns those classifications into the recruiter-fit
   percentage, the gaps, and a recruiter-style summary
+- **Analysed once, not once per visit** — the result is stored against the
+  application and shown as it stands when you come back, in the dashboard and
+  in the extension. Re-analysing is a button, not what happens by default.
+  A description that has changed since is detected and analysed afresh rather
+  than reported from a stale result
 - Select a resume profile JSON to compare against
 
 ### 3. PDF Resume Onboarding 📄
@@ -175,6 +184,22 @@ This flow shows how Talent Pilot connects browser context, resume profiles, AI a
   link. An address or a number the model reports is only accepted when the email
   body verbatim contains it — see [contacts.py](contacts.py)
 - Update matching job records in the local database
+
+### 4b. Application Answers ✍️
+
+- **Your saved details answer for you** — "Are you based out in Pune? Mention
+  Y/N" and "Notice period?" are facts about you, not something to be written
+  from a resume. They are answered from the details you saved once under
+  **Application answers**: exactly, instantly, and without a model call
+- **A question is answered in the shape it was asked** — a form asking for Y/N
+  gets one character back, not a paragraph. Where the answer has to be derived
+  from a saved detail ("is your notice period under 30 days?" against "60
+  days") that is a small grounded call carrying one fact and one question
+- **It will not invent a fact about you** — a factual question with nothing
+  saved to answer it says so and points at the questionnaire, rather than
+  producing a plausible answer nobody checks before submitting
+- **Open questions are drafted** from your resume, the posting, and your own
+  previous answers to questions on the same subject
 
 ### 5. Chrome Extension Copilot 🧩
 
@@ -288,8 +313,10 @@ graph LR
 - 🔑 Account registration and sign-in with hashed passwords
 - 🚀 Streamlit dashboard for local job tracking
 - ⚡ FastAPI backend for extension-to-app communication
-- 🧠 Gemini-powered job-description analysis
-- ✍️ Gemini-powered application answer generation
+- 🧠 Gemini-powered job-description analysis, stored with the application so
+  the same posting is never analysed twice
+- ✍️ Application answers from your own saved details first, and Gemini only for
+  the questions that genuinely need writing
 - 📄 PDF-to-JSON resume profile creation
 - 🎯 Multiple resume profiles for different job tracks
 - 📬 Gmail sync with recruiter email classification

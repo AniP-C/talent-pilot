@@ -365,7 +365,7 @@ sudo sqlite3 -header -column /var/lib/talent-pilot/workspaces/1/jobs.db \
   'SELECT id, company, role, status, source FROM jobs ORDER BY id;'
 ```
 
-Schema version — should be `2`:
+Schema version — should be `6`:
 
 ```bash
 sudo sqlite3 /var/lib/talent-pilot/workspaces/1/jobs.db 'PRAGMA user_version;'

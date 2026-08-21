@@ -591,9 +591,19 @@ def render_dashboard(user: auth.User, db_path) -> None:
         resume=filtered["resume_used"].map(
             lambda name: utils.profile_display_name(name) if name else ui.NOT_STATED
         ),
+        # Both scores, because they answer different questions and the gap
+        # between them is the actionable part: a resume a person would rate
+        # highly can still be filtered out by a keyword match that does not
+        # know Azure experience transfers to AWS.
+        #
+        # Blank where the application has never been analysed. Not a dash and
+        # not a zero — those both read as a measurement, and this is the
+        # absence of one.
+        fit=filtered["match_score"].map(ui.percentage),
+        keywords=filtered["keyword_score"].map(ui.percentage),
     )[
         [
-            "company", "role", "status", "where", "pay",
+            "company", "role", "status", "fit", "keywords", "where", "pay",
             "resume", "date_applied", "source", "link",
         ]
     ]
@@ -606,6 +616,16 @@ def render_dashboard(user: auth.User, db_path) -> None:
             "company": st.column_config.TextColumn("Company", width="medium"),
             "role": st.column_config.TextColumn("Role", width="large"),
             "status": st.column_config.TextColumn("Status", width="small"),
+            "fit": st.column_config.TextColumn(
+                "Fit",
+                width="small",
+                help="Recruiter fit from the AI analysis. Blank until analysed.",
+            ),
+            "keywords": st.column_config.TextColumn(
+                "Keywords",
+                width="small",
+                help="Literal terms the posting names that your resume contains.",
+            ),
             "where": st.column_config.TextColumn("Where", width="small"),
             "pay": st.column_config.TextColumn("Pay", width="small"),
             "resume": st.column_config.TextColumn("CV used", width="small"),
@@ -951,29 +971,69 @@ def render_analyzer(user: auth.User, db_path, selected_profile: str | None) -> N
 
     st.caption(f"Comparing against **{utils.profile_display_name(selected_profile)}**")
 
-    if not st.button("Analyze match", use_container_width=True):
-        return
-
-    resume = utils.load_profile(user.id, selected_profile)
-    resume_text = utils.load_profile_text(user.id, selected_profile)
-
-    utils.save_jd_capture(
-        user.id,
-        job["jd"],
-        company=job["company"],
-        role=job["role"],
-        source="dashboard",
-        trimmed_text=posting.trim_to_description(job["jd"]),
-        unknown_terms=tuple(scoring.unknown_terms(job["jd"])),
+    # An analysis already run against this description is shown as it stands.
+    # Re-deriving it is a large model call to arrive at the number already on
+    # the row, and the fingerprint is what makes reusing it safe: a description
+    # that has been edited or captured more fully since gets a fresh reading
+    # rather than a stale one presented as current.
+    stored = db.get_analysis(job["id"], db_path=db_path)
+    reusable = bool(stored) and stored.get("analysis_jd_hash") == db.jd_fingerprint(
+        job["jd"]
     )
 
-    with st.spinner("Gemini is comparing the job description to your resume…"):
-        result = cached_analysis(job["jd"], json.dumps(resume), resume_text)
+    if reusable:
+        seen = _readable_timestamp(stored.get("analyzed_at") or "")
+        shown, again = st.columns([3, 1])
+        shown.caption(
+            f"Analysed {seen}. Reading it again is free; re-analysing is one "
+            "model call."
+        )
+        rerun = again.button("Re-analyse", use_container_width=True)
+    else:
+        if stored:
+            st.caption(
+                "The saved description has changed since this was last "
+                "analysed, so the previous result no longer describes it."
+            )
+        rerun = st.button(
+            "Analyze match", use_container_width=True, type="primary"
+        )
 
-    # Counted per analysis the user asked for, including the ones served from
-    # cache: this is the measure of what the product is worth to them, and the
-    # cache is our saving rather than a reason to charge them less.
-    usage.record(user.id, usage.ANALYZE_JD, source="dashboard")
+    if reusable and not rerun:
+        result = stored
+    elif not rerun:
+        return
+    else:
+        resume = utils.load_profile(user.id, selected_profile)
+        resume_text = utils.load_profile_text(user.id, selected_profile)
+
+        utils.save_jd_capture(
+            user.id,
+            job["jd"],
+            company=job["company"],
+            role=job["role"],
+            source="dashboard",
+            trimmed_text=posting.trim_to_description(job["jd"]),
+            unknown_terms=tuple(scoring.unknown_terms(job["jd"])),
+        )
+
+        with st.spinner("Gemini is comparing the job description to your resume…"):
+            result = cached_analysis(job["jd"], json.dumps(resume), resume_text)
+
+        if "error" in result:
+            st.error(result["message"])
+            return
+
+        # Kept against the job, so this is the last time this description
+        # costs anything, and so the dashboard can show the score beside the
+        # application without reopening the analyzer.
+        db.save_analysis(job["id"], result, jd_text=job["jd"], db_path=db_path)
+
+        # Metered only where a call was actually made. Re-reading a stored
+        # analysis is not a smaller version of asking for one; it is a
+        # different action, and counting it would put units on the bill that
+        # no model call stands behind.
+        usage.record(user.id, usage.ANALYZE_JD, source="dashboard")
 
     if "error" in result:
         st.error(result["message"])

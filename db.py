@@ -7,6 +7,8 @@ Rows are returned as plain dicts keyed by column name — callers must never
 depend on column order, because migrations append columns.
 """
 
+import hashlib
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -31,7 +33,7 @@ from contacts import is_replyable  # noqa: F401
 #   v2 -> v3  adds the recruiter contact on each application
 #   v3 -> v4  adds the contact's phone number
 #   v4 -> v5  adds the posting's location and salary
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -65,6 +67,26 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- much as the address on an application that has gone quiet.
     contact_phone   TEXT,
     last_contact_at TEXT,
+    -- v6: the analysis, kept with the job it was run for.
+    --
+    -- Two scores because they answer different questions, and a candidate
+    -- needs both: match_score is the weighted requirement coverage a person
+    -- reading the resume would arrive at, keyword_score is whether the literal
+    -- terms appear at all, which is what an automated filter checks. A resume
+    -- can score well on one and badly on the other, and that gap is the
+    -- actionable part.
+    --
+    -- NULL means "never analysed", which is different from a score of zero.
+    match_score      INTEGER,
+    keyword_score    INTEGER,
+    -- The whole analysis, so it can be reopened without paying for it twice.
+    analysis_json    TEXT,
+    -- Which description it was run against. A posting that has been edited, or
+    -- a row whose description was captured later and more fully, deserves a
+    -- fresh analysis; without this there is no way to tell that apart from a
+    -- stored result that is still good.
+    analysis_jd_hash TEXT,
+    analyzed_at      TEXT,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
@@ -128,6 +150,9 @@ JOB_COLUMNS = [
     "contact_email",
     "contact_phone",
     "last_contact_at",
+    "match_score",
+    "keyword_score",
+    "analyzed_at",
     "created_at",
     "updated_at",
 ]
@@ -252,6 +277,22 @@ def _migrate(conn: sqlite3.Connection, db_path) -> None:
             ("salary_max", "INTEGER"),
             ("salary_currency", "TEXT"),
             ("salary_period", "TEXT"),
+        ):
+            if column not in existing:
+                conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {declaration}")
+                logger.info("Added jobs.%s to %s", column, db_path)
+
+    if current < 6:
+        # Same shape as v3 to v5: _SCHEMA declares these but CREATE TABLE IF
+        # NOT EXISTS does nothing to a jobs table that already exists.
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
+
+        for column, declaration in (
+            ("match_score", "INTEGER"),
+            ("keyword_score", "INTEGER"),
+            ("analysis_json", "TEXT"),
+            ("analysis_jd_hash", "TEXT"),
+            ("analyzed_at", "TEXT"),
         ):
             if column not in existing:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {declaration}")
@@ -1049,6 +1090,117 @@ def get_stats(*, db_path) -> dict:
 # =====================================================================
 # EMAIL DEDUPE
 # =====================================================================
+# =====================================================================
+# STORED ANALYSES
+# =====================================================================
+def jd_fingerprint(jd_text: str) -> str:
+    """A stable identity for the description an analysis was run against.
+
+    Whitespace and case are normalised away first, so a posting that was
+    re-copied with different line wrapping is recognised as the same text. The
+    point is to distinguish "this analysis is still about this job" from "the
+    description has changed and the old numbers no longer describe it".
+    """
+    normalised = " ".join((jd_text or "").split()).lower()
+
+    if not normalised:
+        return ""
+
+    return hashlib.sha256(normalised.encode("utf-8")).hexdigest()[:32]
+
+
+def save_analysis(job_id: int, analysis: dict, *, jd_text: str = "", db_path) -> bool:
+    """Keep an analysis with the job it was run for.
+
+    Both scores are stored as columns rather than being dug out of the JSON on
+    every read: they are what the dashboard sorts and filters by, and a query
+    that has to parse a blob to compare two numbers is a query nobody writes.
+    """
+    if not analysis or "error" in analysis:
+        return False
+
+    keyword = (analysis.get("keyword_coverage") or {})
+
+    with connect(db_path) as conn:
+        updated = conn.execute(
+            """
+            UPDATE jobs
+               SET match_score = ?, keyword_score = ?, analysis_json = ?,
+                   analysis_jd_hash = ?, analyzed_at = ?, updated_at = ?
+             WHERE id = ?
+            """,
+            (
+                analysis.get("match_percentage"),
+                keyword.get("score") if keyword.get("scored") else None,
+                json.dumps(analysis),
+                jd_fingerprint(jd_text),
+                _utcnow(),
+                _utcnow(),
+                int(job_id),
+            ),
+        ).rowcount
+
+    if updated:
+        logger.info("Stored analysis for job #%s in %s", job_id, db_path)
+
+    return bool(updated)
+
+
+def get_analysis(job_id: int, *, db_path) -> Optional[dict]:
+    """The stored analysis for a job, or None if it was never analysed."""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT analysis_json, analysis_jd_hash, analyzed_at FROM jobs WHERE id = ?",
+            (int(job_id),),
+        ).fetchone()
+
+    if not row or not row["analysis_json"]:
+        return None
+
+    try:
+        analysis = json.loads(row["analysis_json"])
+    except (ValueError, TypeError):
+        # A corrupt blob is not worth raising over: the caller simply runs the
+        # analysis again, which is the behaviour it had before any of this.
+        logger.warning("Unreadable stored analysis for job #%s", job_id)
+        return None
+
+    analysis["analyzed_at"] = row["analyzed_at"]
+    analysis["analysis_jd_hash"] = row["analysis_jd_hash"]
+    return analysis
+
+
+def analysis_for(
+    company: str, role: str, jd_text: str = "", *, db_path
+) -> Optional[dict]:
+    """A stored analysis still valid for this description, or None.
+
+    The check that makes reuse safe. Returning a stored analysis for a posting
+    whose text has since changed would show numbers that describe a different
+    job, which is worse than paying for the call again.
+
+    An empty ``jd_text`` skips the comparison: the caller is asking "is there
+    one at all?", which is what the dashboard wants when offering to reopen it.
+    """
+    job = get_job_by_identity(company, role, db_path=db_path)
+
+    if not job:
+        return None
+
+    analysis = get_analysis(job["id"], db_path=db_path)
+
+    if not analysis:
+        return None
+
+    if jd_text:
+        stored = analysis.get("analysis_jd_hash") or ""
+        if stored and stored != jd_fingerprint(jd_text):
+            return None
+
+    analysis["job_id"] = job["id"]
+    return analysis
+
+
 def is_email_processed(message_id: str, *, db_path) -> bool:
     with connect(db_path) as conn:
         row = conn.execute(

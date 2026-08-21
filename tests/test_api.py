@@ -442,6 +442,189 @@ def _only_job(account) -> dict:
 # The in-page card runs this on arrival at every job page, which is only
 # defensible because it costs nothing: no model call, no network, and the same
 # answer every time. These tests pin exactly that.
+# =====================================================================
+# REUSING AN ANALYSIS
+# =====================================================================
+POSTING = "We need strong Python, LangChain and Kubernetes experience."
+
+STORED = {
+    "match_percentage": 71,
+    "matched_skills": ["Python"],
+    "missing_skills": ["Kubernetes"],
+    "summary": "Good on the language, thin on the platform.",
+    "requirements": [],
+    "coverage": {"score": 71, "scored": True},
+    "keyword_coverage": {
+        "score": 50, "scored": True, "matched": ["Python"],
+        "missing": ["Kubernetes"], "total": 2,
+    },
+}
+
+
+def _track_and_analyse(account, jd_text=POSTING):
+    """Save a job and attach an analysis to it, as the extension does."""
+    import db
+    import workspace
+
+    db_path = workspace.jobs_db_path(account["user_id"])
+    db.create_table(db_path)
+    job_id = db.add_job(
+        company="Acme Robotics", role="AI Engineer", jd=jd_text, db_path=db_path
+    )
+    db.save_analysis(job_id, STORED, jd_text=jd_text, db_path=db_path)
+    return job_id
+
+
+def test_a_stored_analysis_is_returned_without_a_model_call(account, monkeypatch):
+    """The waste this exists to stop.
+
+    The popup opens on every visit to a job page. Re-deriving the analysis of a
+    description that has not changed spends a large model call to arrive at the
+    number already on the row.
+    """
+    import ai.resume_parser
+
+    _track_and_analyse(account)
+
+    def explode(*args, **kwargs):  # pragma: no cover - must never be reached
+        raise AssertionError("a stored analysis must not call the model")
+
+    monkeypatch.setattr(ai.resume_parser, "generate_structured", explode)
+
+    response = client.post(
+        "/analyze-job",
+        json={"company": "Acme Robotics", "role": "AI Engineer", "jd_text": POSTING},
+        headers=account["headers"],
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["reused"] is True
+    assert body["match_percentage"] == 71
+
+
+def test_a_reused_analysis_is_not_billed(account, monkeypatch):
+    import ai.resume_parser
+    import usage
+
+    _track_and_analyse(account)
+    monkeypatch.setattr(
+        ai.resume_parser, "generate_structured", lambda *a, **k: {"error": "x", "message": "x"}
+    )
+
+    client.post(
+        "/analyze-job",
+        json={"company": "Acme Robotics", "role": "AI Engineer", "jd_text": POSTING},
+        headers=account["headers"],
+    )
+
+    rows = [
+        row for row in usage.per_user() if row["user_id"] == account["user_id"]
+    ]
+    assert rows[0]["events"][usage.ANALYZE_JD] == 0
+
+
+def test_a_changed_description_is_analysed_afresh(account, monkeypatch):
+    """Reuse must not outlive the text it describes."""
+    import ai.resume_parser
+
+    _track_and_analyse(account)
+
+    called = []
+
+    def record(*args, **kwargs):
+        called.append(1)
+        return {"error": "RATE_LIMIT", "message": "stop here"}
+
+    monkeypatch.setattr(ai.resume_parser, "generate_structured", record)
+
+    response = client.post(
+        "/analyze-job",
+        json={
+            "company": "Acme Robotics",
+            "role": "AI Engineer",
+            "jd_text": "A rewritten posting asking for Go and Rust instead.",
+        },
+        headers=account["headers"],
+    )
+
+    # It reached the model rather than answering from the stale result.
+    assert called
+    assert response.status_code == 502
+
+
+def test_refresh_forces_a_new_analysis(account, monkeypatch):
+    import ai.resume_parser
+
+    _track_and_analyse(account)
+
+    called = []
+    monkeypatch.setattr(
+        ai.resume_parser,
+        "generate_structured",
+        lambda *a, **k: called.append(1) or {"error": "x", "message": "x"},
+    )
+
+    client.post(
+        "/analyze-job",
+        json={
+            "company": "Acme Robotics",
+            "role": "AI Engineer",
+            "jd_text": POSTING,
+            "refresh": True,
+        },
+        headers=account["headers"],
+    )
+
+    assert called
+
+
+def test_saving_a_job_keeps_the_analysis_it_was_scored_with(account):
+    """The usual order is score first, then decide to save.
+
+    /analyze-job has no row to attach its result to until the job exists, so
+    without this the scores the user was looking at when they clicked Save
+    would be discarded and the next visit would pay for them again.
+    """
+    import db
+    import workspace
+
+    response = client.post(
+        "/save-job",
+        json={
+            "company": "Globex",
+            "role": "ML Platform Engineer",
+            "jd_text": POSTING,
+            "analysis": STORED,
+        },
+        headers=account["headers"],
+    )
+
+    assert response.status_code == 201
+
+    db_path = workspace.jobs_db_path(account["user_id"])
+    row = db.get_job(response.json()["job_id"], db_path=db_path)
+
+    assert row["match_score"] == 71
+    assert row["keyword_score"] == 50
+
+
+def test_a_job_saved_without_an_analysis_has_no_scores(account):
+    import db
+    import workspace
+
+    response = client.post(
+        "/save-job",
+        json={"company": "Initech", "role": "Engineer", "jd_text": POSTING},
+        headers=account["headers"],
+    )
+
+    db_path = workspace.jobs_db_path(account["user_id"])
+    row = db.get_job(response.json()["job_id"], db_path=db_path)
+
+    assert row["match_score"] is None
+
+
 def test_keyword_scan_needs_no_model_call(account, monkeypatch):
     """If this endpoint ever grew an AI call it would be billing the user for
     opening a page. Break generate_structured and it must still answer."""

@@ -228,6 +228,21 @@ class JobData(BaseModel):
     salary_currency: str = Field(default="", max_length=20)
     salary_period: str = Field(default="", max_length=20)
 
+    # Set when the user has asked for the analysis again on purpose. Without
+    # it there would be no way to get a fresh reading after editing a resume,
+    # because the stored one is keyed on the description rather than on which
+    # resume it was scored against.
+    refresh: bool = False
+
+    # The analysis this posting was given, sent back when the job is saved.
+    #
+    # /analyze-job can only store its result if the job is already tracked, and
+    # the usual order is the other way round: score the posting, decide it is
+    # worth applying to, then save it. Without this the scores the user was
+    # looking at when they clicked Save would be thrown away, and re-opening
+    # the row would pay for the same analysis a second time.
+    analysis: Optional[dict] = None
+
 
 class CheckJobRequest(BaseModel):
     company: str = Field(min_length=1, max_length=200)
@@ -588,6 +603,17 @@ def save_job(job: JobData, user: auth.User = Depends(current_user)) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # Whatever the user was looking at when they saved. Failing here must not
+    # fail the save: the job is already in, and losing a score is a smaller
+    # loss than an error that makes them think it is not.
+    if job.analysis:
+        try:
+            db.save_analysis(
+                job_id, job.analysis, jd_text=job.jd_text, db_path=db_path
+            )
+        except Exception as exc:  # noqa: BLE001 - the job itself is already saved
+            logger.warning("Could not store analysis for job #%s: %s", job_id, exc)
+
     usage.record(user.id, usage.JOB_SAVE, source="extension")
     logger.info("Extension saved job #%s for user %s", job_id, user.id)
     return {"message": "Job saved successfully.", "job_id": job_id}
@@ -647,7 +673,26 @@ def keyword_scan(req: KeywordScanRequest, user: auth.User = Depends(current_user
 # =====================================================================
 @app.post("/analyze-job")
 def analyze_job(job: JobData, user: auth.User = Depends(current_user)) -> dict:
-    """Score the signed-in user's resume against a job description."""
+    """Score the signed-in user's resume against a job description.
+
+    An analysis already stored for this posting is returned as it stands. The
+    extension opens the popup on every visit to a job page, and re-running a
+    requirement-by-requirement analysis of a description that has not changed
+    spends a large model call to arrive at the number already on the row.
+    ``refresh`` forces a new one.
+    """
+    db_path = workspace.jobs_db_path(user.id)
+    db.create_table(db_path)
+
+    if not job.refresh:
+        stored = db.analysis_for(job.company, job.role, job.jd_text, db_path=db_path)
+
+        if stored:
+            # Nothing is metered: no model was called. Saying so lets the
+            # popup show "analysed earlier" rather than implying it just ran.
+            stored["reused"] = True
+            return stored
+
     profile = _validated_profile(user.id, job.profile)
     resume = utils.load_profile(user.id, profile)
 
@@ -674,6 +719,17 @@ def analyze_job(job: JobData, user: auth.User = Depends(current_user)) -> dict:
     # nothing, so billing a user for it would be indefensible; the error is
     # already in the logs.
     usage.record(user.id, usage.ANALYZE_JD, source="extension")
+
+    # Kept against the tracked row so the next visit to this posting is free.
+    # Silent when the job is not tracked yet: saving it later carries the
+    # scores across, and there is no row to attach them to before that.
+    tracked = db.get_job_by_identity(job.company, job.role, db_path=db_path)
+    if tracked:
+        db.save_analysis(
+            tracked["id"], analysis, jd_text=job.jd_text, db_path=db_path
+        )
+
+    analysis["reused"] = False
     return analysis
 
 
@@ -715,7 +771,13 @@ def generate_answer(req: AnswerRequest, user: auth.User = Depends(current_user))
     if "error" in result:
         raise HTTPException(status_code=502, detail=result["message"])
 
-    usage.record(user.id, usage.ANSWER_DRAFT, source="extension")
+    # Only a real model call is billable. An answer taken straight from the
+    # user's saved details, or a question referred back to them because no
+    # saved detail answers it, costs nothing — and recording those as paid
+    # units would overstate the one number a price is set from.
+    if result.get("billable", True):
+        usage.record(user.id, usage.ANSWER_DRAFT, source="extension")
+
     return result
 
 

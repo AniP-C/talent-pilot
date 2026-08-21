@@ -9,6 +9,12 @@ const el = (id) => document.getElementById(id);
 const send = (message) => chrome.runtime.sendMessage(message);
 
 let currentJob = null;
+// The analysis showing in the popup, kept so that saving the job can carry it
+// with it. The usual order is score the posting, then decide to save it — and
+// the server has no row to attach the result to until that second step, so
+// without this the scores on screen are thrown away and the next visit pays
+// for them again.
+let currentAnalysis = null;
 let currentTab = null;
 let authMode = "signin";
 // Populated from /health so the invite field appears only where it applies.
@@ -786,7 +792,14 @@ el("btn-analyze").addEventListener("click", async () => {
         return;
     }
 
+    currentAnalysis = response.data;
     renderAnalysis(response.data);
+
+    // Said plainly rather than left to look like a fast model. Reusing an
+    // earlier analysis is the normal case for a posting already visited.
+    if (response.data.reused) {
+        setStatus("Showing the analysis saved for this posting.", "success");
+    }
 });
 
 el("btn-save").addEventListener("click", async () => {
@@ -803,6 +816,10 @@ el("btn-save").addEventListener("click", async () => {
     const button = el("btn-save");
     button.disabled = true;
     setStatus("Saving…");
+
+    if (currentAnalysis && !currentAnalysis.error) {
+        payload.analysis = currentAnalysis;
+    }
 
     const response = await send({ type: "SAVE_JOB", job: payload });
     button.disabled = false;

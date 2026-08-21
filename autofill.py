@@ -97,6 +97,9 @@ FIELDS: list[Field] = [
           patterns=[r"phone", r"mobile", r"\bcell\b", r"contact\s*number", r"telephone"]),
     Field("location", "Current location", group="Personal", resume_path="location",
           patterns=[r"current\s*(location|city|residence)", r"where\s*are\s*you\s*(based|located)",
+                    # "Are you based out in Pune?" matched none of these, so a
+                    # detail the user had already saved was referred back to them.
+                    r"are\s*you\s*based", r"based\s*(out\s*)?(of|in|at)\b",
                     r"\bcity\b", r"\blocation\b", r"\baddress\b"]),
     Field("linkedin", "LinkedIn URL", group="Personal", resume_path="linkedin",
           patterns=[r"linked\s*-?in"]),
@@ -140,7 +143,10 @@ FIELDS: list[Field] = [
                     r"work\s*experience\s*\(years", r"experience\s*in\s*years"]),
     Field("notice_period", "Notice period", group="Employment",
           patterns=[r"notice\s*period", r"joining\s*period",
-                    r"how\s*soon\s*can\s*you\s*(join|start)", r"when\s*can\s*you\s*(join|start)"]),
+                    r"how\s*soon\s*can\s*you\s*(join|start)", r"when\s*can\s*you\s*(join|start)",
+                    # An immediate joiner is someone whose notice period is
+                    # nil, so the same saved detail settles this question.
+                    r"immediate\s*joiner", r"\bjoiner\b"]),
     Field("current_ctc", "Current salary / CTC", group="Employment",
           patterns=[r"current\s*(ctc|salary|compensation)", r"present\s*(ctc|salary)"]),
     Field("expected_ctc", "Expected salary / CTC", group="Employment",

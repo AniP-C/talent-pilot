@@ -203,7 +203,7 @@ Expect `"service":"talent-pilot-api"` and the current `version`.
 sudo -u talentpilot sqlite3 /var/lib/talent-pilot/workspaces/1/jobs.db 'PRAGMA user_version;'
 ```
 
-Expect `2`. If `sqlite3` is not installed, `sudo apt-get install -y sqlite3`.
+Expect `6`. If `sqlite3` is not installed, `sudo apt-get install -y sqlite3`.
 
 Confirm the backfill produced history rows:
 
