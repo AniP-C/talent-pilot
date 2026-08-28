@@ -74,6 +74,16 @@ def last_sync_path(user_id: int) -> Path:
     return workspace_dir(user_id) / "last_sync.txt"
 
 
+def sync_log_path(user_id: int) -> Path:
+    """This user's inbox-sync decision log, isolated to their workspace.
+
+    Sync lines quote real company names and email subjects from the user's own
+    mailbox, so the log is per-user like everything else here — never a shared
+    file that another account could read.
+    """
+    return workspace_dir(user_id) / "sync.log"
+
+
 def autofill_path(user_id: int) -> Path:
     """Where this user's application-form answers live.
 

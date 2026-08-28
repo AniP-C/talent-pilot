@@ -1445,12 +1445,32 @@ def render_activity(user: auth.User, db_path) -> None:
 
     st.divider()
     st.subheader("Inbox sync log")
-    st.caption(
-        f"Written to `{SYNC_LOG_FILE}`. Every email the sync considered, and "
-        "why it was or was not acted on."
-    )
 
-    lines = _tail(SYNC_LOG_FILE, 200)
+    # Only an admin may read the shared log, which carries every account's mail
+    # subjects and company names. Everyone else sees strictly their own — the
+    # option does not exist for them, so its absence gives nothing away.
+    show_all = False
+    if admin.is_admin(user.email):
+        show_all = st.checkbox(
+            "Show every account's activity (admin)",
+            value=False,
+            help="Reads the shared server log across all users. Off shows only your own.",
+        )
+
+    if show_all:
+        st.caption(
+            "Across **all accounts** — every email the sync considered on this "
+            "server, and why it was or was not acted on."
+        )
+        source = SYNC_LOG_FILE
+    else:
+        st.caption(
+            "Every email your last few syncs considered, and why it was or was "
+            "not acted on. Only your own account's activity is shown here."
+        )
+        source = workspace.sync_log_path(user.id)
+
+    lines = _tail(source, 200)
 
     if not lines:
         st.info("No syncs have run yet.")

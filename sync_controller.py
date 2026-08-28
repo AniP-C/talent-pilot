@@ -1,8 +1,10 @@
 """Inbox -> tracker pipeline: fetch, classify, and record recruiter emails."""
 
+import logging
 import time
 import uuid
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from typing import Callable, Optional
 
 import contacts
@@ -13,6 +15,60 @@ import workspace
 from ai.email_classifier import MIN_CONFIDENCE, classify_email, resolve_company, to_status
 from config import GMAIL_THROTTLE_SECONDS, sync_logger as logger
 from integrations.gmail_client import fetch_job_emails, mailbox_address
+
+# Per-user sync-log lines are written in the same shape as the shared sync.log,
+# so the dashboard renders both identically.
+_SYNC_LINE_FORMAT = logging.Formatter(
+    fmt="%(asctime)s | %(levelname)-8s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
+
+class _RunFilter(logging.Filter):
+    """Pass only the lines belonging to one sync run.
+
+    ``sync_logger`` is a module-wide logger, so two users syncing at once emit
+    into it together. Every line of a run is stamped ``[sync <run_id>]``;
+    filtering on that keeps one user's per-user log from capturing another's
+    concurrent run.
+    """
+
+    def __init__(self, run_id: str) -> None:
+        super().__init__()
+        self._tag = f"[sync {run_id}]"
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return self._tag in record.getMessage()
+
+
+def _attach_user_sync_log(user_id: int, run_id: str) -> Optional[logging.Handler]:
+    """Route this run's lines into the user's own workspace sync log.
+
+    Best-effort: if the handler cannot be opened the sync still runs and still
+    writes to the shared operational log — it simply will not show in the
+    dashboard's Activity tab. That is never a reason to fail a sync.
+    """
+    try:
+        handler = RotatingFileHandler(
+            workspace.sync_log_path(user_id),
+            maxBytes=1_000_000,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        handler.setFormatter(_SYNC_LINE_FORMAT)
+        handler.addFilter(_RunFilter(run_id))
+        logger.addHandler(handler)
+        return handler
+    except OSError:
+        logger.warning("[sync %s] Could not open per-user sync log", run_id)
+        return None
+
+
+def _detach_user_sync_log(handler: Optional[logging.Handler]) -> None:
+    if handler is None:
+        return
+    logger.removeHandler(handler)
+    handler.close()
 
 
 def _email_date(email: dict) -> str:
@@ -48,11 +104,30 @@ def sync_inbox_to_db(
 
     Returns a summary dict with counts. ``progress_callback`` receives a short
     status line per email so the UI can show live progress.
+
+    This run's log lines are captured into the user's own workspace so the
+    Activity tab shows only their sync history and never another account's.
     """
     # One id for the whole run, stamped on every line it writes. Without it,
     # two overlapping syncs interleave in the log and neither can be followed.
     run_id = uuid.uuid4().hex[:8]
 
+    handler = _attach_user_sync_log(user_id, run_id)
+    try:
+        return _run_sync(
+            user_id, run_id, progress_callback=progress_callback,
+            throttle_seconds=throttle_seconds,
+        )
+    finally:
+        _detach_user_sync_log(handler)
+
+
+def _run_sync(
+    user_id: int,
+    run_id: str,
+    progress_callback: Optional[Callable[[str], None]] = None,
+    throttle_seconds: float = GMAIL_THROTTLE_SECONDS,
+) -> dict:
     db_path = workspace.jobs_db_path(user_id)
     db.create_table(db_path)
 
