@@ -566,6 +566,7 @@ Tokens come from `/auth/register` or `/auth/login` and are valid for 30 days.
 | `POST` | `/keyword-scan` | Keyword coverage only — no model call, so the in-page card can run it on arrival |
 | `POST` | `/analyze-job` | Score a JD against your resume |
 | `POST` | `/generate-answer` | Draft an application answer |
+| `POST` | `/refine-answer` | Shorten, expand or rephrase a draft |
 | `POST` | `/save-answer` | Store an answer in your memory bank |
 
 Example `/analyze-job` body:

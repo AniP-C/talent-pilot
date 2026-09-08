@@ -565,6 +565,44 @@ def _no_saved_detail(question: str) -> dict:
     }
 
 
+# How long a drafted answer should run. Three bands rather than a free number:
+# nobody knows whether they want 140 words or 180, and everybody knows whether
+# the box in front of them wants a line or a paragraph. STANDARD is the 200
+# words this prompt used to hardcode, so an unspecified length behaves exactly
+# as it did before the control existed.
+SHORT = "short"
+STANDARD = "standard"
+LONG = "long"
+
+LENGTH_WORDS = {SHORT: 60, STANDARD: 200, LONG: 400}
+DEFAULT_LENGTH = STANDARD
+
+
+def _word_budget(length: str) -> int:
+    return LENGTH_WORDS.get(length, LENGTH_WORDS[DEFAULT_LENGTH])
+
+
+# Tone is appended as one extra rule rather than rewritten into the prompt, so
+# the default output does not shift for anyone who never touches the control.
+TONES = {
+    "concise": "Write plainly and get to the point. No throat-clearing.",
+    "conversational": (
+        "Write the way the candidate would say it aloud to an interviewer: "
+        "warm and direct, contractions welcome, still professional."
+    ),
+    "formal": (
+        "Write formally, as for a traditional employer. Full sentences, no "
+        "contractions, no casual asides."
+    ),
+}
+
+
+def _tone_rule(tone: str) -> str:
+    """The extra prompt rule for a tone, or nothing at all for the default."""
+    instruction = TONES.get((tone or "").strip().lower())
+    return f"\n    6. {instruction}" if instruction else ""
+
+
 def generate_smart_answer(
     user_id: int,
     question: str,
@@ -572,6 +610,8 @@ def generate_smart_answer(
     role: str,
     jd_text: str,
     active_resume_str: str,
+    length: str = DEFAULT_LENGTH,
+    tone: str = "",
 ) -> dict:
     """Answer one application question, as cheaply as it can be answered well.
 
@@ -604,7 +644,7 @@ def generate_smart_answer(
         return _no_saved_detail(question)
 
     return _draft_open_answer(
-        user_id, question, company, role, jd_text, active_resume_str
+        user_id, question, company, role, jd_text, active_resume_str, length, tone
     )
 
 
@@ -615,6 +655,8 @@ def _draft_open_answer(
     role: str,
     jd_text: str,
     active_resume_str: str,
+    length: str = DEFAULT_LENGTH,
+    tone: str = "",
 ) -> dict:
     """Draft an application answer grounded in the user's resume and past answers."""
     memory_context, memory_file = load_answer_memory(user_id, question)
@@ -632,6 +674,9 @@ def _draft_open_answer(
             "Not available. Do not guess at what this role involves; "
             "answer from the resume and the question alone."
         )
+
+    word_budget = _word_budget(length)
+    tone_rule = _tone_rule(tone)
 
     prompt = f"""
     You are an expert career coach helping a candidate write a response for a
@@ -651,13 +696,13 @@ def _draft_open_answer(
     {job_description}
 
     RULES:
-    1. Keep it under 200 words.
+    1. Keep it under {word_budget} words.
     2. Sound like an authentic engineer; no generic filler or empty metaphors.
     3. Never invent employers, dates, or metrics that are not in the resume.
     4. Respect any factual metrics provided in previous answers.
     5. Answer the Target Question specifically. Where the job description names
        a requirement the resume can speak to, connect the two explicitly rather
-       than describing the candidate in general terms.
+       than describing the candidate in general terms.{tone_rule}
 
     Before answering, re-read the question: {question}
     An answer that would fit equally well under a different question is the
@@ -673,6 +718,132 @@ def _draft_open_answer(
         result["memory_used"] = memory_file
         result["source"] = FROM_MODEL
         result["billable"] = True
+
+    return result
+
+
+# =====================================================================
+# REFINING A DRAFT
+#
+# Deliberately not routed through generate_smart_answer. Routing exists to
+# decide where an answer should come from, and by the time there is a draft on
+# screen that decision has already been made — re-running it would let
+# "shorten" return a saved profile detail instead of a shorter version of the
+# paragraph the user is looking at.
+# =====================================================================
+SHORTEN = "shorten"
+EXPAND = "expand"
+REPHRASE = "rephrase"
+SHARPEN = "more_specific"
+
+REFINEMENTS = {
+    SHORTEN: "Cut it down. Keep the strongest concrete detail and drop the rest.",
+    EXPAND: (
+        "Give it more room. Add specifics that are already in the resume or "
+        "the previous answers — never new ones."
+    ),
+    REPHRASE: (
+        "Say the same thing differently. Keep every fact; change the wording "
+        "and the shape of the sentences."
+    ),
+    SHARPEN: (
+        "Make it more specific to this role. Replace general claims with the "
+        "concrete evidence the resume already provides."
+    ),
+}
+
+
+def _refined_budget(instruction: str, previous_answer: str) -> int:
+    """A word budget measured against the draft in hand, not a fixed band.
+
+    Shortening 400 words to the 60-word band would not be an edit, it would be
+    a different answer. What "shorter" means depends on what is already there.
+    """
+    words = max(len((previous_answer or "").split()), 1)
+
+    if instruction == SHORTEN:
+        return max(25, round(words * 0.55))
+    if instruction == EXPAND:
+        return min(600, max(80, round(words * 1.7)))
+
+    return max(40, min(600, words))
+
+
+def refine_answer(
+    user_id: int,
+    question: str,
+    previous_answer: str,
+    instruction: str,
+    company: str = "",
+    role: str = "",
+    jd_text: str = "",
+    active_resume_str: str = "",
+    tone: str = "",
+) -> dict:
+    """Rewrite a draft the user already has, without answering the question afresh."""
+    draft = (previous_answer or "").strip()
+
+    if not draft:
+        return {
+            "error": "NO_DRAFT",
+            "message": "There is no draft to revise yet. Generate an answer first.",
+        }
+
+    key = (instruction or "").strip()
+    edit = REFINEMENTS.get(key)
+
+    # Anything that is not one of the four buttons is the user's own note
+    # about what to change, passed through as the edit to make.
+    if not edit:
+        edit = f"Revise it as the candidate asked: {key}" if key else REFINEMENTS[REPHRASE]
+        key = key or REPHRASE
+
+    word_budget = _refined_budget(key, draft)
+    tone_rule = _tone_rule(tone)
+
+    # The resume is still supplied, but only as the boundary of what may be
+    # said. Expanding an answer is exactly where a model starts inventing a
+    # second internship to fill the space.
+    prompt = f"""
+    You are editing a job-application answer the candidate has already
+    drafted. Your job is to revise this specific text, not to write a new
+    answer to the question from scratch.
+
+    Target Question: {question}
+    Target Company: {company or "Not named."}
+    Target Role: {role or "Not named."}
+
+    THE CANDIDATE'S CURRENT DRAFT:
+    {draft[:8000]}
+
+    WHAT TO CHANGE: {edit}
+
+    THE CANDIDATE'S RESUME (the limit of what may be claimed, not new material
+    to work in):
+    {active_resume_str[:4000]}
+
+    JOB DESCRIPTION:
+    {(jd_text or "").strip()[:3000] or "Not available."}
+
+    RULES:
+    1. Aim for about {word_budget} words.
+    2. Keep every factual claim the draft already makes. Never add an
+       employer, a date, a metric or a project that is not in the draft or in
+       the resume above.
+    3. Keep the candidate's own voice. This is their answer being edited, not
+       yours being written.
+    4. Return only the revised answer. No preamble, no notes on what you
+       changed.{tone_rule}
+    """
+    result = generate_structured(
+        prompt, AnswerResponse, "REFINE_ANSWER", temperature=DRAFTING_TEMPERATURE
+    )
+
+    if "error" not in result:
+        result["memory_used"] = f"your previous draft ({key})"
+        result["source"] = FROM_MODEL
+        result["billable"] = True
+        result["instruction"] = key
 
     return result
 

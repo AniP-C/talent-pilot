@@ -355,6 +355,7 @@ POST   /save-job                    token (409 on duplicate)
 PATCH  /jobs/{id}/status            token
 POST   /analyze-job                 token
 POST   /generate-answer             token
+POST   /refine-answer               token
 POST   /save-answer                 token
 ```
 

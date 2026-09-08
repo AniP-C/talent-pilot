@@ -26,7 +26,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -40,9 +40,13 @@ import usage
 import utils
 import workspace
 from ai.resume_parser import (
+    DEFAULT_LENGTH,
+    LENGTH_WORDS,
+    TONES,
     analyze_jd,
     convert_pdf_to_json,
     generate_smart_answer,
+    refine_answer,
     save_answer_to_memory,
 )
 from config import (
@@ -266,6 +270,39 @@ class AnswerRequest(BaseModel):
     role: str = Field(default="", max_length=200)
     jd_text: str = Field(default="", max_length=50_000)
     profile: Optional[str] = Field(default=None, max_length=255)
+
+    # How long the answer should run, and how it should sound. Both default to
+    # what this endpoint produced before they existed, so an older extension
+    # build keeps getting exactly the answers it got yesterday.
+    length: str = Field(default=DEFAULT_LENGTH, max_length=20)
+    tone: str = Field(default="", max_length=20)
+
+    @field_validator("length")
+    @classmethod
+    def _known_length(cls, value: str) -> str:
+        return value if value in LENGTH_WORDS else DEFAULT_LENGTH
+
+    @field_validator("tone")
+    @classmethod
+    def _known_tone(cls, value: str) -> str:
+        return value if value in TONES else ""
+
+
+class RefineAnswerRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    previous_answer: str = Field(min_length=1, max_length=20_000)
+    # One of the named refinements, or the user's own note on what to change.
+    instruction: str = Field(default="rephrase", max_length=200)
+    company: str = Field(default="", max_length=200)
+    role: str = Field(default="", max_length=200)
+    jd_text: str = Field(default="", max_length=50_000)
+    profile: Optional[str] = Field(default=None, max_length=255)
+    tone: str = Field(default="", max_length=20)
+
+    @field_validator("tone")
+    @classmethod
+    def _known_tone(cls, value: str) -> str:
+        return value if value in TONES else ""
 
 
 class SaveAnswerRequest(BaseModel):
@@ -733,22 +770,25 @@ def analyze_job(job: JobData, user: auth.User = Depends(current_user)) -> dict:
     return analysis
 
 
-@app.post("/generate-answer")
-def generate_answer(req: AnswerRequest, user: auth.User = Depends(current_user)) -> dict:
-    # An application form is usually a different page from the posting, and an
-    # embedded one is an iframe containing the questions and nothing else. The
-    # description captured when the job was saved is the better context, so the
-    # tracked row is consulted before falling back to what the page could see.
+def _answer_context(
+    user_id: int, company: str, role: str, jd_text: str, profile: Optional[str]
+) -> dict:
+    """Everything an answer is written from, resolved once for both routes.
+
+    An application form is usually a different page from the posting, and an
+    embedded one is an iframe containing the questions and nothing else. The
+    description captured when the job was saved is the better context, so the
+    tracked row is consulted before falling back to what the page could see.
+    """
     tracked = None
-    if req.company and req.role:
-        db_path = workspace.jobs_db_path(user.id)
+    if company and role:
+        db_path = workspace.jobs_db_path(user_id)
         # Migrate before reading. get_job_by_identity degrades to None on an
         # unmigrated database rather than raising, which would silently cost
         # the saved description until the user next opened the dashboard.
         db.create_table(db_path)
-        tracked = db.get_job_by_identity(req.company, req.role, db_path=db_path)
+        tracked = db.get_job_by_identity(company, role, db_path=db_path)
 
-    jd_text = req.jd_text
     saved_jd = (tracked or {}).get("jd") or ""
     if len(saved_jd) > len(jd_text):
         jd_text = saved_jd
@@ -756,16 +796,27 @@ def generate_answer(req: AnswerRequest, user: auth.User = Depends(current_user))
     # Answer as the resume actually sent to this employer. Falling back to the
     # tracked row's resume_used matters for anyone keeping one profile per
     # target role, which is the whole point of supporting several.
-    profile = req.profile or (tracked or {}).get("resume_used")
-    resume = utils.load_profile(user.id, _validated_profile(user.id, profile))
+    chosen = profile or (tracked or {}).get("resume_used")
+    resume = utils.load_profile(user_id, _validated_profile(user_id, chosen))
+
+    return {
+        "company": company or (tracked or {}).get("company", ""),
+        "role": role or (tracked or {}).get("role", ""),
+        "jd_text": jd_text,
+        "active_resume_str": json.dumps(resume),
+    }
+
+
+@app.post("/generate-answer")
+def generate_answer(req: AnswerRequest, user: auth.User = Depends(current_user)) -> dict:
+    context = _answer_context(user.id, req.company, req.role, req.jd_text, req.profile)
 
     result = generate_smart_answer(
         user_id=user.id,
         question=req.question,
-        company=req.company or (tracked or {}).get("company", ""),
-        role=req.role or (tracked or {}).get("role", ""),
-        jd_text=jd_text,
-        active_resume_str=json.dumps(resume),
+        length=req.length,
+        tone=req.tone,
+        **context,
     )
 
     if "error" in result:
@@ -777,6 +828,40 @@ def generate_answer(req: AnswerRequest, user: auth.User = Depends(current_user))
     # units would overstate the one number a price is set from.
     if result.get("billable", True):
         usage.record(user.id, usage.ANSWER_DRAFT, source="extension")
+
+    return result
+
+
+@app.post("/refine-answer")
+def refine_existing_answer(
+    req: RefineAnswerRequest, user: auth.User = Depends(current_user)
+) -> dict:
+    """Rewrite a draft the user already has in front of them.
+
+    Not folded into /generate-answer, because the two do different things. That
+    route decides where an answer should come from; by the time there is a
+    draft on screen that decision is made, and re-running it would let
+    "shorten" hand back a saved profile detail instead of a shorter version of
+    the paragraph being edited.
+    """
+    context = _answer_context(user.id, req.company, req.role, req.jd_text, req.profile)
+
+    result = refine_answer(
+        user_id=user.id,
+        question=req.question,
+        previous_answer=req.previous_answer,
+        instruction=req.instruction,
+        tone=req.tone,
+        **context,
+    )
+
+    if "error" in result:
+        raise HTTPException(status_code=502, detail=result["message"])
+
+    # Every refinement is a real model call, so every one of them is metered.
+    # A draft that has been shortened, expanded and rephrased cost four units,
+    # and the counter in the popup has to agree with the bill.
+    usage.record(user.id, usage.ANSWER_DRAFT, source="extension")
 
     return result
 

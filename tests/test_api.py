@@ -16,6 +16,11 @@ PROTECTED_ENDPOINTS = [
     ("post", "/analyze-job", {"company": "Acme", "role": "Engineer"}),
     ("post", "/keyword-scan", {"jd_text": "Python"}),
     ("post", "/generate-answer", {"question": "Why us?"}),
+    (
+        "post",
+        "/refine-answer",
+        {"question": "Why us?", "previous_answer": "A draft.", "instruction": "shorten"},
+    ),
     ("post", "/save-answer", {"question": "Why us?", "answer": "Because."}),
     ("get", "/auth/me", None),
     ("get", "/autofill", None),
@@ -700,3 +705,81 @@ def test_privacy_policy_covers_what_the_store_requires():
     # Deletion route and a contact address are both required disclosures.
     assert "delete your account" in body.lower()
     assert "@" in body
+
+
+# =====================================================================
+# REVISING A DRAFT
+# =====================================================================
+@pytest.fixture
+def no_model(monkeypatch):
+    """Answer without calling Gemini, and report what was asked for."""
+    from ai import resume_parser
+
+    seen = {}
+
+    def fake(prompt, schema, tag, temperature=None):
+        seen["tag"] = tag
+        seen["prompt"] = prompt
+        return {"suggested_answer": "Revised.", "confidence_score": 70, "memory_used": ""}
+
+    monkeypatch.setattr(resume_parser, "generate_structured", fake)
+    return seen
+
+
+def test_refining_returns_a_revised_draft(account, no_model):
+    response = client.post(
+        "/refine-answer",
+        json={
+            "question": "Tell us about yourself",
+            "previous_answer": "A long paragraph about my work.",
+            "instruction": "shorten",
+        },
+        headers=account["headers"],
+    )
+
+    assert response.status_code == 200
+    assert response.json()["suggested_answer"] == "Revised."
+    assert no_model["tag"] == "REFINE_ANSWER"
+
+
+def test_every_refinement_is_metered(account, no_model):
+    """Four taps on the refine buttons is four paid units, not zero."""
+    import usage
+
+    for _ in range(3):
+        client.post(
+            "/refine-answer",
+            json={
+                "question": "Tell us about yourself",
+                "previous_answer": "A long paragraph about my work.",
+                "instruction": "rephrase",
+            },
+            headers=account["headers"],
+        )
+
+    row = next(r for r in usage.per_user() if r["email"] == account["email"])
+
+    assert row["events"][usage.ANSWER_DRAFT] == 3
+
+
+def test_refining_needs_a_draft_to_refine(account):
+    """An empty draft is rejected at the edge, before anything is billed."""
+    response = client.post(
+        "/refine-answer",
+        json={"question": "Tell us about yourself", "previous_answer": ""},
+        headers=account["headers"],
+    )
+
+    assert response.status_code == 422
+
+
+def test_an_unknown_length_does_not_reject_the_request(account, no_model):
+    """An older or newer extension build must not get a 422 over a new option."""
+    response = client.post(
+        "/generate-answer",
+        json={"question": "Tell us about yourself", "length": "enormous", "tone": "pirate"},
+        headers=account["headers"],
+    )
+
+    assert response.status_code == 200
+    assert "under 200 words" in no_model["prompt"]

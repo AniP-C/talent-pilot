@@ -224,3 +224,179 @@ def test_an_unrelated_question_gets_no_exemplars():
     stored = "--- Q: Do you own a laptop? ---\nYes."
 
     assert resume_parser._entries_resembling(stored, "Preferred joining date") == ""
+
+
+# =====================================================================
+# LENGTH AND TONE
+#
+# These used to be one hardcoded line in the prompt. The tests below pin the
+# default, because the point of adding the controls was to give the user a
+# choice — not to change what everyone who never touches them already gets.
+# =====================================================================
+@pytest.fixture
+def captured_prompt(monkeypatch):
+    """Capture the prompt instead of calling a model."""
+    seen = {}
+
+    def fake(prompt, schema, tag, temperature=None):
+        seen["prompt"] = prompt
+        seen["tag"] = tag
+        seen["temperature"] = temperature
+        return {"suggested_answer": "drafted", "confidence_score": 80, "memory_used": ""}
+
+    monkeypatch.setattr(resume_parser, "generate_structured", fake)
+    return seen
+
+
+def test_an_unspecified_length_is_the_two_hundred_words_it_always_was(captured_prompt):
+    resume_parser.generate_smart_answer(
+        user_id=1,
+        question="Tell us about yourself",
+        company="Acme",
+        role="Engineer",
+        jd_text="",
+        active_resume_str="{}",
+    )
+
+    assert "under 200 words" in captured_prompt["prompt"]
+
+
+@pytest.mark.parametrize(
+    "length,words",
+    [("short", 60), ("standard", 200), ("long", 400)],
+)
+def test_the_chosen_length_sets_the_word_budget(captured_prompt, length, words):
+    resume_parser.generate_smart_answer(
+        user_id=1,
+        question="Tell us about yourself",
+        company="Acme",
+        role="Engineer",
+        jd_text="",
+        active_resume_str="{}",
+        length=length,
+    )
+
+    assert f"under {words} words" in captured_prompt["prompt"]
+
+
+def test_an_unknown_length_falls_back_rather_than_breaking(captured_prompt):
+    resume_parser.generate_smart_answer(
+        user_id=1,
+        question="Tell us about yourself",
+        company="Acme",
+        role="Engineer",
+        jd_text="",
+        active_resume_str="{}",
+        length="enormous",
+    )
+
+    assert "under 200 words" in captured_prompt["prompt"]
+
+
+def test_no_tone_adds_no_rule(captured_prompt):
+    resume_parser.generate_smart_answer(
+        user_id=1,
+        question="Tell us about yourself",
+        company="Acme",
+        role="Engineer",
+        jd_text="",
+        active_resume_str="{}",
+    )
+
+    assert "6." not in captured_prompt["prompt"]
+
+
+def test_a_tone_arrives_as_one_extra_rule(captured_prompt):
+    resume_parser.generate_smart_answer(
+        user_id=1,
+        question="Tell us about yourself",
+        company="Acme",
+        role="Engineer",
+        jd_text="",
+        active_resume_str="{}",
+        tone="formal",
+    )
+
+    assert "6. Write formally" in captured_prompt["prompt"]
+
+
+# =====================================================================
+# REFINING A DRAFT
+# =====================================================================
+def test_refining_skips_routing_entirely(captured_prompt, saved_details):
+    """The bug this prevents: "shorten" returning a saved detail.
+
+    "Notice period?" routes to the saved answer bank and returns "60 days"
+    without a model call. Once there is a draft on screen the user is editing
+    that text, and sending the question back through routing would replace
+    their paragraph with two words.
+    """
+    result = resume_parser.refine_answer(
+        user_id=1,
+        question="Notice period?",
+        previous_answer="I am currently serving a sixty day notice period at my employer.",
+        instruction=resume_parser.SHORTEN,
+    )
+
+    assert result["suggested_answer"] == "drafted"
+    assert result["source"] == resume_parser.FROM_MODEL
+    assert captured_prompt["tag"] == "REFINE_ANSWER"
+    assert "sixty day notice period" in captured_prompt["prompt"]
+
+
+def test_every_refinement_is_billable(captured_prompt):
+    result = resume_parser.refine_answer(
+        user_id=1,
+        question="Tell us about yourself",
+        previous_answer="A paragraph about me.",
+        instruction=resume_parser.REPHRASE,
+    )
+
+    assert result["billable"] is True
+
+
+def test_shortening_is_measured_against_the_draft_in_hand():
+    """A fixed band is not an edit.
+
+    Cutting four hundred words to the sixty-word band would not shorten the
+    answer, it would replace it. What "shorter" means depends on what is there.
+    """
+    long_draft = " ".join(["word"] * 400)
+    short_draft = " ".join(["word"] * 80)
+
+    assert resume_parser._refined_budget(resume_parser.SHORTEN, long_draft) == 220
+    assert resume_parser._refined_budget(resume_parser.SHORTEN, short_draft) == 44
+
+
+def test_expanding_grows_from_the_draft_and_stays_bounded():
+    assert resume_parser._refined_budget(resume_parser.EXPAND, "one two three") > 3
+    assert resume_parser._refined_budget(
+        resume_parser.EXPAND, " ".join(["word"] * 900)
+    ) <= 600
+
+
+def test_refining_nothing_costs_nothing(monkeypatch):
+    """No draft means no call, rather than a paid request for an empty edit."""
+
+    def explode(*args, **kwargs):
+        raise AssertionError("a model was called with no draft to revise")
+
+    monkeypatch.setattr(resume_parser, "generate_structured", explode)
+
+    result = resume_parser.refine_answer(
+        user_id=1, question="Tell us about yourself", previous_answer="   ",
+        instruction=resume_parser.SHORTEN,
+    )
+
+    assert result["error"] == "NO_DRAFT"
+
+
+def test_a_free_text_instruction_is_passed_through_as_the_edit(captured_prompt):
+    resume_parser.refine_answer(
+        user_id=1,
+        question="Tell us about yourself",
+        previous_answer="A paragraph about me.",
+        instruction="mention the Kafka migration",
+    )
+
+    assert "mention the Kafka migration" in captured_prompt["prompt"]
