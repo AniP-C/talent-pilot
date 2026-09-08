@@ -455,6 +455,13 @@ const handlers = {
         return apiRequest("/generate-answer", { method: "POST", body: payload });
     },
 
+    // Rewriting a draft the user already has. A separate route from
+    // GENERATE_ANSWER on purpose — see /refine-answer on the server for why
+    // re-running the routing would hand back a saved detail instead of an edit.
+    REFINE_ANSWER({ payload }) {
+        return apiRequest("/refine-answer", { method: "POST", body: payload });
+    },
+
     SAVE_ANSWER({ question, answer }) {
         return apiRequest("/save-answer", { method: "POST", body: { question, answer } });
     },
@@ -539,4 +546,52 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .catch((err) => sendResponse({ ok: false, error: String(err) }));
 
     return true; // keep the message channel open for the async response
+});
+
+// ---------------------------------------------------------------------------
+// "Draft an answer for this" on selected text
+//
+// The in-page button only appears next to a textarea on one of the job sites
+// in the manifest. Plenty of questions arrive nowhere near one — in a recruiter
+// email, a LinkedIn message, a Google Doc the company sent over. Selecting the
+// question and right-clicking covers all of them without widening the host
+// permissions by a single site.
+// ---------------------------------------------------------------------------
+const ASK_MENU_ID = "talent-pilot-draft-answer";
+
+function createAskMenu() {
+    // Recreated rather than assumed: onInstalled fires again on every update,
+    // and creating a duplicate id throws.
+    chrome.contextMenus.removeAll(() => {
+        chrome.contextMenus.create({
+            id: ASK_MENU_ID,
+            title: 'Draft an answer for "%s"',
+            contexts: ["selection"]
+        });
+    });
+}
+
+chrome.runtime.onInstalled.addListener(createAskMenu);
+chrome.runtime.onStartup.addListener(createAskMenu);
+
+chrome.contextMenus.onClicked.addListener(async (info) => {
+    if (info.menuItemId !== ASK_MENU_ID) return;
+
+    const question = (info.selectionText || "").trim().slice(0, 2000);
+    if (!question) return;
+
+    // Handed over through storage rather than drafted here. Drafting costs a
+    // model call, and the user has not yet seen which resume it would answer
+    // as or had the chance to change the length — so the popup asks first.
+    await chrome.storage.local.set({ pendingQuestion: question });
+
+    // openPopup is recent, and unavailable in some builds and on some
+    // platforms. The badge is the fallback: the question is already saved, so
+    // clicking the toolbar icon picks it up either way.
+    try {
+        await chrome.action.openPopup();
+    } catch (err) {
+        chrome.action.setBadgeText({ text: "?" });
+        chrome.action.setBadgeBackgroundColor({ color: "#6200ee" });
+    }
 });

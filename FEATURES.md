@@ -24,6 +24,7 @@ one is the complete functional description.
 7. [The application answer bank](#7-the-application-answer-bank)
 8. [In-page form suggestions](#8-in-page-form-suggestions)
 9. [AI answer drafting](#9-ai-answer-drafting)
+   - [Asking a question yourself](#9a-asking-a-question-yourself)
 10. [Catching an application as you submit it](#10-catching-an-application-as-you-submit-it)
 11. [The tracker dashboard](#11-the-tracker-dashboard)
 12. [Follow-ups: what has gone quiet](#12-follow-ups-what-has-gone-quiet)
@@ -485,11 +486,60 @@ on a different page from the form — or the form is an embedded iframe with non
 of the description in it — the description captured when you saved the job is
 used instead.
 
-**Rules the model works under.** Under 200 words, no invented employers, dates
-or metrics, respect facts from your previous answers, and connect the resume to
-the posting's stated requirements rather than describing you in general terms.
+**Rules the model works under.** A word budget set by the length you chose, no
+invented employers, dates or metrics, respect facts from your previous answers,
+and connect the resume to the posting's stated requirements rather than
+describing you in general terms.
 
 **It always says "review before submitting".** The draft is a starting point.
+
+---
+
+## 9a. Asking a question yourself
+
+**What it is.** An **💬 Ask a question** panel in the extension popup. The same
+drafting, for a question that did not arrive in a textarea on a job board.
+
+**Why it exists.** The in-page button needs two things to be true: you are on
+one of the sites in the manifest, and the question is sitting in a form field.
+Plenty of questions are neither — a recruiter asks "what is the best project
+you have worked on?" over email, on a call, or in a chat widget the extension
+cannot see. It is the same question and the same resume.
+
+**How to use it.** Open the popup, expand **Ask a question**, type or paste what
+you were asked, and click **Draft answer**. If a job posting is open in the
+active tab, the answer is written against that posting; on a blank tab it is
+written from your resume alone.
+
+**Or right-click it.** Select the question anywhere — an email, a document, a
+chat — and choose **Draft an answer for "…"**. The popup opens with it already
+in the box. It is only ever prefilled: drafting costs a model call, so nothing
+is spent until you click.
+
+**Length and tone.** Short, Standard or Detailed, and a tone of Concise,
+Conversational or Formal. Left alone, both produce exactly what this feature
+produced before the controls existed.
+
+**Revising.** **Shorter**, **Longer**, **Rephrase** and **Sharpen**, or type
+your own note — "mention the Kafka migration" — and press Enter. Shortening is
+measured against the draft in front of you rather than a fixed size, because
+cutting four hundred words to sixty is not an edit, it is a different answer.
+
+**Undo.** Every version this session is kept, and **↶ Undo** puts the previous
+one back. Shorten-then-regret is the most common thing anyone does with these
+buttons.
+
+**Every revision is a model call**, and the count sits next to the buttons that
+spend it. A draft you shortened, expanded and rephrased cost four.
+
+**Saving is a button, not automatic.** The in-page button saves what it fills
+in, which is reasonable — that answer is going into a form you are about to
+submit. A draft you are still revising is not that, and auto-saving mid-revision
+would fill your answer bank with versions you rejected.
+
+**A factual question is still refused.** "What is your current CTC?" has no
+answer in your resume, so the panel says which detail to save rather than
+inventing one.
 
 ---
 

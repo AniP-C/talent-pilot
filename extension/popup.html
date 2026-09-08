@@ -332,12 +332,57 @@
             white-space: nowrap;
         }
 
-        #upload-panel, #settings-panel {
+        #ask-panel textarea, #settings-panel textarea {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 9px 11px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--surface);
+            color: var(--text);
+            font: inherit;
+            line-height: 1.5;
+            resize: vertical;
+            margin-bottom: 8px;
+        }
+        #ask-panel textarea:focus { outline: none; border-color: var(--accent); }
+        #ask-panel textarea::placeholder { color: var(--muted); }
+
+        .ask-controls { display: flex; gap: 8px; margin-bottom: 8px; }
+        .ask-controls select { flex: 1; margin: 0; }
+
+        /* Wraps rather than scrolls: four refinements do not fit on one row of
+           a 360px popup, and a hidden "Sharpen" is a feature nobody finds. */
+        .ask-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 8px;
+        }
+        .ask-actions .btn {
+            flex: 1 1 auto;
+            width: auto;
+            margin: 0;
+            padding: 7px 10px;
+            font-size: 12px;
+        }
+
+        .ask-meta {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        #ask-status { font-size: 12px; line-height: 1.5; }
+
+        #ask-panel, #upload-panel, #settings-panel {
             margin-top: 14px;
             border-top: 1px solid var(--border);
             padding-top: 10px;
         }
         #settings-panel summary,
+        #ask-panel summary,
         #upload-panel summary {
             cursor: pointer;
             font-size: 12px;
@@ -348,10 +393,14 @@
             border-radius: 6px;
         }
         #upload-panel summary::-webkit-details-marker,
+        #ask-panel summary::-webkit-details-marker,
         #settings-panel summary::-webkit-details-marker { display: none; }
         #upload-panel summary:hover,
+        #ask-panel summary:hover,
         #settings-panel summary:hover { color: var(--accent-hover); }
         #upload-panel form, #settings-panel form { margin-top: 10px; }
+        #ask-panel[open] > *:not(summary) { margin-top: 0; }
+        #ask-panel[open] > label:first-of-type { display: block; margin-top: 10px; }
         #upload-panel input[type="file"] { padding: 7px; font-size: 12px; }
         #upload-status, #settings-status {
             margin-top: 8px;
@@ -616,6 +665,65 @@
         <button id="btn-enable-site" class="btn btn-ghost hidden">Enable Copilot on this site</button>
 
         <div id="status-area"></div>
+
+        <!-- Ask a question
+             The in-page button only reaches a textarea on a supported job
+             site. A question asked in an email, on a call, or in a chat box
+             the extension cannot see is the same question, and this is where
+             it gets answered. -->
+        <details id="ask-panel">
+            <summary>💬 Ask a question</summary>
+
+            <label for="ask-question">Their question</label>
+            <textarea id="ask-question" rows="2"
+                      placeholder="e.g. What is the best project you have worked on?"></textarea>
+
+            <div class="ask-controls">
+                <select id="ask-length" aria-label="Answer length">
+                    <option value="short">Short</option>
+                    <option value="standard" selected>Standard</option>
+                    <option value="long">Detailed</option>
+                </select>
+                <select id="ask-tone" aria-label="Tone">
+                    <option value="">Default tone</option>
+                    <option value="concise">Concise</option>
+                    <option value="conversational">Conversational</option>
+                    <option value="formal">Formal</option>
+                </select>
+            </div>
+
+            <button id="btn-draft" class="btn btn-primary">✍️ Draft answer</button>
+
+            <div id="ask-result" class="hidden">
+                <textarea id="ask-answer" rows="7" aria-label="Drafted answer"></textarea>
+
+                <div class="ask-meta">
+                    <span id="ask-source" class="muted"></span>
+                    <span id="ask-history" class="muted"></span>
+                </div>
+
+                <!-- Revision. Every one of these is a model call, which is why
+                     the count sits next to them rather than out of sight. -->
+                <div class="ask-actions">
+                    <button class="btn btn-ghost refine" data-instruction="shorten">Shorter</button>
+                    <button class="btn btn-ghost refine" data-instruction="expand">Longer</button>
+                    <button class="btn btn-ghost refine" data-instruction="rephrase">Rephrase</button>
+                    <button class="btn btn-ghost refine" data-instruction="more_specific">Sharpen</button>
+                </div>
+
+                <label for="ask-note" class="muted">Or say what to change</label>
+                <input type="text" id="ask-note"
+                       placeholder="e.g. mention the Kafka migration">
+
+                <div class="ask-actions">
+                    <button id="btn-undo" class="btn btn-ghost" disabled>↶ Undo</button>
+                    <button id="btn-copy" class="btn btn-ghost">📋 Copy</button>
+                    <button id="btn-save-answer" class="btn btn-success">Save to my answers</button>
+                </div>
+            </div>
+
+            <div id="ask-status"></div>
+        </details>
 
         <!-- Resume onboarding, collapsed so it never crowds the main actions -->
         <details id="upload-panel">

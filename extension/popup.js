@@ -835,6 +835,265 @@ el("btn-save").addEventListener("click", async () => {
     show("company-prompt", false);
 });
 
+// ---------------------------------------------------------------------------
+// Asking a question
+//
+// The in-page button only reaches a textarea on one of the sites in the
+// manifest. This is the same drafting, for a question that arrived anywhere
+// else — an email, a call, a chat box the extension cannot see.
+// ---------------------------------------------------------------------------
+
+// Every draft this session, oldest first. Kept because shorten-then-regret is
+// the most common thing anyone does with these buttons, and losing a good
+// paragraph to one bad refinement is what makes a feature like this feel
+// unsafe to use.
+let answerHistory = [];
+
+// Refinements are model calls and the user is paying for them, so the count is
+// shown next to the buttons that spend it rather than discovered on a bill.
+let answerCalls = 0;
+
+function setAskStatus(text, className = "") {
+    const area = el("ask-status");
+    area.textContent = "";
+
+    if (!text) return;
+
+    const span = document.createElement("span");
+    if (className) span.className = className;
+    span.textContent = text;
+    area.appendChild(span);
+}
+
+function askButtons() {
+    return [
+        el("btn-draft"), el("btn-undo"), el("btn-copy"), el("btn-save-answer"),
+        ...document.querySelectorAll("#ask-panel .refine")
+    ];
+}
+
+function askBusy(busy) {
+    askButtons().forEach((button) => { button.disabled = busy; });
+    if (!busy) el("btn-undo").disabled = answerHistory.length < 2;
+}
+
+function renderHistory() {
+    el("ask-history").textContent = answerCalls
+        ? `${answerCalls} ${answerCalls === 1 ? "draft" : "drafts"} used`
+        : "";
+    el("btn-undo").disabled = answerHistory.length < 2;
+}
+
+function pushAnswer(text) {
+    answerHistory.push(text);
+    el("ask-answer").value = text;
+    show("ask-result", true);
+    renderHistory();
+}
+
+// What the answer was written from. The server already reports this and the
+// extension threw it away; "drafted from your resume" and "this is your own
+// saved answer" call for very different amounts of checking before sending.
+const ASK_SOURCES = {
+    profile: "Your saved answer — no AI call",
+    model: "Drafted from your resume",
+    needs_profile: "Needs a detail you have not saved yet"
+};
+
+function renderAnswerMeta(data) {
+    const label = ASK_SOURCES[data.source] || "";
+    const confidence = Number(data.confidence_score);
+
+    el("ask-source").textContent =
+        label && confidence ? `${label} · ${confidence}% confident` : label;
+}
+
+// Context for the draft. A posting open in the active tab makes the answer
+// specific to it; a blank tab still works, from the resume alone.
+function askContext() {
+    return {
+        company: currentJob?.company || "",
+        role: currentJob?.role || "",
+        jd_text: currentJob?.jd_text || "",
+        profile: el("profile-dropdown").value || null
+    };
+}
+
+async function draftAnswer() {
+    const question = el("ask-question").value.trim();
+
+    if (!question) {
+        setAskStatus("Type the question you were asked first.", "warning");
+        el("ask-question").focus();
+        return;
+    }
+
+    askBusy(true);
+    setAskStatus("🤖 Drafting…");
+
+    const response = await send({
+        type: "GENERATE_ANSWER",
+        payload: {
+            question,
+            ...askContext(),
+            length: el("ask-length").value,
+            tone: el("ask-tone").value
+        }
+    });
+
+    askBusy(false);
+
+    if (!response.ok) {
+        setAskStatus(response.error, "warning");
+        if (response.needsAuth) await initialize();
+        return;
+    }
+
+    // A closed factual question routes away from the model on purpose, rather
+    // than inventing where somebody lives. In the content script that shows as
+    // an untouched box; here the user deliberately asked, so an empty result
+    // has to say what to do about it instead of looking like a failure.
+    if (!response.data.suggested_answer) {
+        show("ask-result", false);
+        setAskStatus(response.data.message || "Nothing to draft for this one.");
+        return;
+    }
+
+    answerHistory = [];
+    if (response.data.source === "model") answerCalls += 1;
+
+    pushAnswer(response.data.suggested_answer);
+    renderAnswerMeta(response.data);
+    setAskStatus("Review it before you send it.", "success-text");
+}
+
+async function refineAnswer(instruction) {
+    const draft = el("ask-answer").value.trim();
+    const question = el("ask-question").value.trim();
+
+    if (!draft) {
+        setAskStatus("Draft an answer before revising it.", "warning");
+        return;
+    }
+
+    // The question is what a revision is judged against, so an emptied box is
+    // caught here rather than coming back as a validation error from the API.
+    if (!question) {
+        setAskStatus("Put the question back before revising the answer.", "warning");
+        el("ask-question").focus();
+        return;
+    }
+
+    askBusy(true);
+    setAskStatus("🤖 Revising…");
+
+    const response = await send({
+        type: "REFINE_ANSWER",
+        payload: {
+            question,
+            // Whatever is in the box, including the user's own edits. They are
+            // revising the text in front of them, not the last thing the model
+            // happened to return.
+            previous_answer: draft,
+            instruction,
+            ...askContext(),
+            tone: el("ask-tone").value
+        }
+    });
+
+    askBusy(false);
+
+    if (!response.ok) {
+        setAskStatus(response.error, "warning");
+        if (response.needsAuth) await initialize();
+        return;
+    }
+
+    answerCalls += 1;
+    pushAnswer(response.data.suggested_answer);
+    renderAnswerMeta(response.data);
+    el("ask-note").value = "";
+    setAskStatus("Revised. Undo puts the previous version back.", "success-text");
+}
+
+document.querySelectorAll("#ask-panel .refine").forEach((button) => {
+    button.addEventListener("click", () => refineAnswer(button.dataset.instruction));
+});
+
+el("btn-draft").addEventListener("click", draftAnswer);
+
+// A typed note is its own refinement, so Enter runs it rather than doing
+// nothing — the field is not in a form and would otherwise swallow the key.
+el("ask-note").addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+
+    const note = el("ask-note").value.trim();
+    if (note) refineAnswer(note);
+});
+
+el("btn-undo").addEventListener("click", () => {
+    if (answerHistory.length < 2) return;
+
+    answerHistory.pop();
+    el("ask-answer").value = answerHistory[answerHistory.length - 1];
+    renderHistory();
+    setAskStatus("Previous version restored.");
+});
+
+el("btn-copy").addEventListener("click", async () => {
+    const text = el("ask-answer").value;
+    if (!text) return;
+
+    await navigator.clipboard.writeText(text);
+    setAskStatus("Copied.", "success-text");
+});
+
+// Saving is deliberately a button rather than automatic. The content script
+// saves what it fills in, which is reasonable there — that answer is going
+// into a form the user is about to submit. A draft still being revised is not
+// that, and auto-saving mid-revision fills the answer bank with rejected
+// versions of the same paragraph.
+el("btn-save-answer").addEventListener("click", async () => {
+    const question = el("ask-question").value.trim();
+    const answer = el("ask-answer").value.trim();
+
+    if (!question || !answer) return;
+
+    askBusy(true);
+    setAskStatus("Saving…");
+
+    const response = await send({ type: "SAVE_ANSWER", question, answer });
+    askBusy(false);
+
+    if (!response.ok) {
+        setAskStatus(response.error, "warning");
+        return;
+    }
+
+    setAskStatus(
+        response.data.reusable
+            ? "Saved — this question will fill in by itself from now on."
+            : "Saved to your memory bank.",
+        "success-text"
+    );
+});
+
+// A question sent over from the right-click menu. Opening the panel with it
+// already in the box is the whole point: the user selected the question on
+// another page and should not have to retype it here.
+async function loadPendingQuestion() {
+    const { pendingQuestion } = await chrome.storage.local.get("pendingQuestion");
+
+    if (!pendingQuestion) return;
+
+    await chrome.storage.local.remove("pendingQuestion");
+    chrome.action.setBadgeText({ text: "" });
+
+    el("ask-question").value = pendingQuestion;
+    el("ask-panel").open = true;
+}
+
 async function openDashboard() {
     // Ask the API for a one-time code so the dashboard adopts this session
     // instead of presenting a second sign-in form.
@@ -856,6 +1115,7 @@ async function initialize() {
     );
     setStatus("");
     setUploadStatus("");
+    setAskStatus("");
 
     await loadSettings();
 
@@ -884,6 +1144,7 @@ async function initialize() {
     el("account-email").textContent = status.data.email;
     await loadProfiles();
     await showSetupNudge();
+    await loadPendingQuestion();
     await scanActivePage();
 }
 

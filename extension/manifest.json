@@ -1,14 +1,21 @@
 {
   "manifest_version": 3,
-  "name": "Talent Pilot — AI Job Copilot",
-  "version": "2.5.0",
+  "name": "Talent Pilot \u2014 AI Job Copilot",
+  "version": "2.6.0",
   "description": "See how a job matches your resume as you open it, save it in one click, and reuse your saved application answers.",
-  "permissions": ["activeTab", "storage", "scripting"],
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting",
+    "contextMenus"
+  ],
   "host_permissions": [
     "https://katchjobs.online/*",
     "http://localhost:8000/*"
   ],
-  "optional_host_permissions": ["https://*/*"],
+  "optional_host_permissions": [
+    "https://*/*"
+  ],
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
@@ -55,7 +62,9 @@
         "https://*.naukri.com/*",
         "https://*.indeed.com/*"
       ],
-      "js": ["content.js"],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle",
       "all_frames": true
     }
