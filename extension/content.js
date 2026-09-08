@@ -416,6 +416,24 @@
         return button;
     }
 
+    // What makes two askings of a question the same asking.
+    //
+    // This used to key on location.href, which meant the same question on the
+    // Greenhouse posting and on the Lever form for one job were two separate
+    // cache entries and two separate model calls — and any tracking parameter
+    // on the URL missed the cache outright. The answer depends on the question
+    // and on who is being applied to, so those are what it is filed under.
+    function answerCacheKey(question, company) {
+        const normalized = question
+            .toLowerCase()
+            .replace(/\s+/g, " ")
+            .replace(/[^a-z0-9 ]/g, "")
+            .trim()
+            .slice(0, 120);
+
+        return `ans_${(company || "unknown").toLowerCase()}_${normalized}`;
+    }
+
     async function handleGenerate(textarea, button) {
         const question = questionFor(textarea);
 
@@ -425,8 +443,6 @@
             finish(button, "❌ Could not read the question for this box", "#d9534f");
             return;
         }
-
-        const cacheKey = `ans_${location.href}_${question.slice(0, 50)}`;
 
         button.disabled = true;
         button.textContent = "⏳ Checking…";
@@ -440,6 +456,9 @@
             return;
         }
 
+        const job = await jobContext();
+        const cacheKey = answerCacheKey(question, job.company);
+
         const cached = await chrome.storage.local.get(cacheKey);
         if (cached[cacheKey]) {
             applyAnswer(textarea, cached[cacheKey]);
@@ -448,8 +467,6 @@
         }
 
         button.textContent = "🤖 Generating…";
-
-        const job = await jobContext();
 
         // Which resume to answer as. The popup records the chosen profile and
         // the content script never read it, so someone keeping one resume per
