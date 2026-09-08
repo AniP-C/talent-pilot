@@ -109,6 +109,49 @@ to their own account.
 | Host permissions | Communicates with the user's own Talent Pilot account server to load their resume profiles and saved answers, and to save applications. |
 | `optional_host_permissions` | Requested one site at a time, only when the user clicks "Enable Copilot on this site", so the extension never has access to sites the user has not chosen. |
 
+## When "Submit for review" is greyed out
+
+The button is disabled by a blank **required** field, never by the package —
+and the dashboard does not say which one. Adding a permission is the usual
+cause: a new permission creates a new empty justification box on the **Privacy
+practices** tab, so an item that submitted fine last release stops submitting
+this one. 2.6.0 added `contextMenus` and did exactly that.
+
+Everything below gates the button. Work down the list; every one of them has to
+be non-empty, and the last three have to be ticked.
+
+**Privacy practices tab**
+
+| Field | What to put |
+| ----- | ----------- |
+| Single purpose | The statement [above](#single-purpose-statement) |
+| `activeTab` | The row in the table above |
+| `storage` | The row in the table above |
+| `scripting` | The row in the table above |
+| `contextMenus` | The row in the table above — **new in 2.6.0** |
+| Host permissions | The row in the table above |
+| Remote code | **No.** Everything the extension runs is in the package. It calls an API and renders the response; it never loads or evaluates code fetched at runtime. Answering yes here starts a far longer review for something that is not true. |
+| Privacy policy URL | `https://katchjobs.online/privacy` |
+
+**The three certifications at the bottom of that tab.** All three must be
+ticked, and all three are true of this extension:
+
+- I do not sell or transfer user data to third parties outside of the approved
+  use cases
+- I do not use or transfer user data for purposes unrelated to my item's single
+  purpose
+- I do not use or transfer user data to determine creditworthiness or for
+  lending purposes
+
+**Store listing tab** — a category, a language, and at least one screenshot
+(1280x800 or 640x400). A missing screenshot greys the button out with no
+message about screenshots.
+
+**Account tab** — the contact email has to be verified, and the publisher
+account needs two-factor authentication before it can publish anything.
+
+---
+
 ## Data use disclosures
 
 Fill these in on the dashboard's **Privacy practices** tab. They must match what
