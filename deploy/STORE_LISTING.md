@@ -105,6 +105,7 @@ to their own account.
 | `activeTab` | Reads the job posting on the page the user is viewing, so the extension can show the match score and save the job to the user's tracker. |
 | `storage` | Stores the user's sign-in token, their chosen resume profile, whether the match card is switched on, and a short-lived prompt to save an application they just submitted. |
 | `scripting` | Runs the page reader on sites the user has explicitly enabled from the popup. |
+| `contextMenus` | Adds one right-click entry, shown only when text is selected, that carries the selected question into the extension's own popup so the user can ask for a draft answer to it. Nothing is read from the page and nothing is sent anywhere until the user clicks Draft in the popup. |
 | Host permissions | Communicates with the user's own Talent Pilot account server to load their resume profiles and saved answers, and to save applications. |
 | `optional_host_permissions` | Requested one site at a time, only when the user clicks "Enable Copilot on this site", so the extension never has access to sites the user has not chosen. |
 
@@ -134,6 +135,14 @@ What keeps that defensible, and what to say:
 Do **not** claim the extension only reads a page when the popup is opened. It no
 longer does.
 
+**The right-click entry does not widen any of this.** 2.6.0 adds "Draft an
+answer for …" to the context menu. Chrome hands the extension the text the user
+selected, and only when they choose that entry — it is not a page read, it does
+not require access to the site, and it works on pages the extension has no
+permission for. The selection is put into the popup's question box and nothing
+leaves the browser until the user clicks Draft, at which point it goes to their
+own account server exactly as a question typed into the popup does.
+
 ## Before resubmitting
 
 - [ ] Description contains no list of third-party site or company names
@@ -145,6 +154,10 @@ longer does.
       to match. Re-read it against the diff on every release that changes when
       data leaves the page — the store checks this, and so should you.
 - [ ] Data use disclosures match the permission justifications above
+- [ ] Every permission in `manifest.json` has a row in the table above. 2.6.0
+      added `contextMenus`; a permission present in the package and absent from
+      the justifications is the mismatch the store looks for. Diff the two on
+      every release rather than trusting that nothing changed.
 - [ ] The deployed policy is the updated one — it is served by the API from
       `static/privacy.html`, so it ships with a **server** deploy, not with the
       extension package. Confirm at the URL before submitting.
