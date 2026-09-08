@@ -500,6 +500,11 @@ def run_sync(user: auth.User) -> None:
         # run that found out who is handling an application.
         if summary.get("contacts"):
             line += f" · {summary['contacts']} contact(s) found"
+        # Named here because the sidebar is where a user asks "did it look at
+        # my mail?". Without it the run reports only what survived the filter,
+        # which reads as the size of the inbox rather than what was left of it.
+        if summary.get("dropped"):
+            line += f" · {summary['dropped']} filtered out before classifying"
 
         st.sidebar.success(line)
         st.rerun()
@@ -1480,6 +1485,19 @@ def render_activity(user: auth.User, db_path) -> None:
         "Show only decisions (hide progress lines)", value=True
     )
 
+    # Off by default, and separate from the decisions filter. These are
+    # messages that were never classified at all — the rule filter rejected
+    # them before any model call — so they are a different question from "what
+    # did the sync do", and a noisy inbox produces a lot of them.
+    show_dropped = st.checkbox(
+        "Show mail the filter rejected before classifying it",
+        value=False,
+        help=(
+            "Every message the rule filter threw away, and the rule that threw "
+            "it. Worth a look if an application you expected never appeared."
+        ),
+    )
+
     if only_decisions:
         lines = [
             line
@@ -1487,12 +1505,24 @@ def render_activity(user: auth.User, db_path) -> None:
             if any(
                 tag in line
                 for tag in (
-                    "SKIP", "UPDATED", "CREATED", "REPEAT", "NOTED", "MATCH", "ERROR",
+                    "SKIP", "UPDATED", "CREATED", "REPEAT", "NOTED", "MATCH",
+                    "ERROR", "DROPPED", "Bouncer:",
                 )
             )
         ]
 
+    if not show_dropped:
+        lines = [line for line in lines if "DROPPED " not in line]
+
     st.code("\n".join(lines[-120:]) or "No matching lines.", language="log")
+
+    if show_dropped:
+        st.caption(
+            "A rejected message was never sent to the model, so nothing about "
+            "it reached your tracker. A blocked word is matched against the "
+            "body as well as the subject, so an otherwise genuine email can be "
+            "rejected by its own footer."
+        )
 
 
 def _change_label(entry: dict) -> str:

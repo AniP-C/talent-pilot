@@ -14,7 +14,7 @@ import secrets
 import sys
 import time
 from html import unescape
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from google.auth.transport.requests import Request
 from google.auth.exceptions import RefreshError
@@ -282,74 +282,124 @@ def mailbox_address(user_id: int) -> str:
         return ""
 
 
-def is_high_probability_job_email(sender: str, subject: str, snippet: str) -> bool:
-    """Cheap rule engine that filters out noise before paying for an AI call."""
+BLACKLIST = [
+    "newsletter",
+    "job alert",
+    "job alerts",
+    "digest",
+    "marketing",
+    "weekly",
+    "campaign",
+    "unsubscribe from job",
+    "promotions",
+]
+
+ATS_DOMAINS = [
+    "greenhouse.io",
+    "lever.co",
+    "myworkdayjobs.com",
+    "smartrecruiters.com",
+    "icims.com",
+    "successfactors.com",
+    "taleo.net",
+    "bamboohr.com",
+    "ashbyhq.com",
+    "workable.com",
+]
+
+RECRUITING_ADDRESSES = [
+    "talent@",
+    "careers@",
+    "recruiting@",
+    "recruiter@",
+    "hiring@",
+    "hr@",
+    "peopleops@",
+    "no-reply@",
+]
+
+# Phrases rather than bare words: a lone "offer" also appears in "limited
+# time offer", which is exactly the marketing mail this filter exists to
+# keep out.
+HIGH_SIGNAL_PHRASES = [
+    "application",
+    "interview",
+    "assessment",
+    "job offer",
+    "offer letter",
+    "extend an offer",
+    "pleased to offer",
+    "candidate",
+    "you applied",
+    "moving forward",
+    "next steps",
+    "hiring team",
+]
+
+
+class Screening(NamedTuple):
+    """One bouncer verdict, and the rule that produced it.
+
+    The reason is the whole point. This filter runs before any model call and
+    drops silently, so a genuine recruiter email it rejects simply never
+    happens as far as the rest of the system is concerned — and until this
+    existed there was no way, even in principle, to find out which ones.
+    """
+
+    passed: bool
+    reason: str
+
+
+def _sender_address(sender: str) -> str:
+    """The bare address out of a From header, lowercased."""
+    match = re.search(r"<([^>]+)>", sender or "")
+    return (match.group(1) if match else (sender or "")).strip().lower()
+
+
+def screen_email(
+    sender: str, subject: str, snippet: str, own_address: str = ""
+) -> Screening:
+    """Cheap rule engine that filters out noise before paying for an AI call.
+
+    Returns the verdict and the rule behind it, so a drop can be reported to
+    the person whose mail it was rather than only counted.
+    """
     sender_lower = (sender or "").lower()
     content_lower = f"{subject or ''} {snippet or ''}".lower()
     combined = f"{sender_lower} {content_lower}"
 
+    # Mail the user sent themselves. Their own replies to recruiters match
+    # every content rule below — they are about an application, they quote the
+    # thread — so they were fetched, classified at cost, and then discarded
+    # further down the pipeline as "not an update on an application this user
+    # submitted". Recognising them here makes that free.
+    if own_address and _sender_address(sender) == own_address.strip().lower():
+        return Screening(False, "sent from your own address")
+
     # Blacklist wins over every other signal — marketing blasts often contain
     # the same words as genuine recruiter mail.
-    blacklist = [
-        "newsletter",
-        "job alert",
-        "job alerts",
-        "digest",
-        "marketing",
-        "weekly",
-        "campaign",
-        "unsubscribe from job",
-        "promotions",
-    ]
-    if any(word in combined for word in blacklist):
-        return False
+    for word in BLACKLIST:
+        if word in combined:
+            return Screening(False, f"blocked word {word!r}")
 
-    ats_domains = [
-        "greenhouse.io",
-        "lever.co",
-        "myworkdayjobs.com",
-        "smartrecruiters.com",
-        "icims.com",
-        "successfactors.com",
-        "taleo.net",
-        "bamboohr.com",
-        "ashbyhq.com",
-        "workable.com",
-    ]
-    if any(domain in sender_lower for domain in ats_domains):
-        return True
+    for domain in ATS_DOMAINS:
+        if domain in sender_lower:
+            return Screening(True, f"ATS sender {domain}")
 
-    human_indicators = [
-        "talent@",
-        "careers@",
-        "recruiting@",
-        "recruiter@",
-        "hiring@",
-        "hr@",
-        "peopleops@",
-        "no-reply@",
-    ]
-    if any(indicator in sender_lower for indicator in human_indicators):
-        return True
+    for indicator in RECRUITING_ADDRESSES:
+        if indicator in sender_lower:
+            return Screening(True, f"recruiting address {indicator}")
 
-    # Phrases rather than bare words: a lone "offer" also appears in "limited
-    # time offer", which is exactly the marketing mail this filter exists to
-    # keep out.
-    high_signal_phrases = [
-        "application",
-        "interview",
-        "assessment",
-        "job offer",
-        "offer letter",
-        "extend an offer",
-        "pleased to offer",
-        "candidate",
-        "you applied",
-        "moving forward",
-        "next steps",
-        "hiring team",
-    ]
-    return any(phrase in content_lower for phrase in high_signal_phrases)
+    for phrase in HIGH_SIGNAL_PHRASES:
+        if phrase in content_lower:
+            return Screening(True, f"phrase {phrase!r}")
+
+    return Screening(False, "no recruiting signal in the sender or the text")
+
+
+def is_high_probability_job_email(sender: str, subject: str, snippet: str) -> bool:
+    """Whether the bouncer lets this message through. See ``screen_email``."""
+    return screen_email(sender, subject, snippet).passed
 
 
 # The search that decides which mail is even considered.
@@ -437,7 +487,25 @@ def _extract_body(payload: dict) -> str:
     return text[:MAX_BODY_CHARS]
 
 
-def fetch_job_emails(user_id: int, max_results: int = None) -> list[dict]:
+class Scan(NamedTuple):
+    """What one mailbox scan saw, kept and threw away.
+
+    ``dropped`` is returned rather than logged here so the caller decides how
+    it is reported: the sync controller owns the run id every line is tagged
+    with, and this module has no business knowing about it.
+    """
+
+    emails: list[dict]
+    dropped: list[dict]
+
+    @property
+    def considered(self) -> int:
+        return len(self.emails) + len(self.dropped)
+
+
+def fetch_job_emails(
+    user_id: int, max_results: int = None, own_address: str = ""
+) -> Scan:
     """Fetch recent mail, filter it, and return the likely job-related messages.
 
     Returned **oldest first**. Gmail lists newest first, but an application
@@ -447,6 +515,10 @@ def fetch_job_emails(user_id: int, max_results: int = None) -> list[dict]:
     Each entry includes the Gmail ``id`` so the caller can skip messages it has
     already classified, and the ``Reply-To``, ``Cc`` and ``To`` headers, which
     is where the human behind an ATS relay is usually named.
+
+    Everything the bouncer rejected comes back in ``dropped``, with the rule
+    that rejected it. A filter that runs before any model call and leaves no
+    trace is a filter nobody can correct.
     """
     service = authenticate_gmail(user_id, allow_interactive=False)
     max_results = max_results or GMAIL_MAX_RESULTS
@@ -470,9 +542,10 @@ def fetch_job_emails(user_id: int, max_results: int = None) -> list[dict]:
 
         if not messages:
             logger.info("No candidate emails found for user %s", user_id)
-            return []
+            return Scan([], [])
 
         valid_emails = []
+        dropped = []
 
         for msg in messages:
             msg_data = (
@@ -491,27 +564,44 @@ def fetch_job_emails(user_id: int, max_results: int = None) -> list[dict]:
 
             # The filter sees the body too, so a genuine recruiter mail whose
             # subject is bland is no longer judged on the subject alone.
-            if is_high_probability_job_email(sender, subject, f"{snippet}\n{body}"):
-                valid_emails.append(
+            verdict = screen_email(
+                sender, subject, f"{snippet}\n{body}", own_address=own_address
+            )
+
+            if not verdict.passed:
+                # Kept whole rather than counted. "18 fetched, 34 considered"
+                # tells the user a filter exists; naming the message and the
+                # rule tells them whether it was right.
+                dropped.append(
                     {
                         "id": msg["id"],
                         "sender": sender,
-                        # An ATS sends as no-reply@vendor and sets Reply-To to
-                        # the recruiter who actually owns the requisition. It is
-                        # the single best "who do I answer?" signal in the
-                        # message, and was previously read and discarded.
-                        "reply_to": _header(headers, "Reply-To", ""),
-                        # Cc frequently carries the second recruiter on a thread
-                        # or the hiring manager being looped in.
-                        "cc": _header(headers, "Cc", ""),
-                        "to": _header(headers, "To", ""),
                         "subject": subject,
-                        "snippet": snippet,
-                        "body": body,
-                        # Epoch milliseconds, as a string, straight from Gmail.
-                        "internal_date": int(msg_data.get("internalDate", 0)),
+                        "reason": verdict.reason,
                     }
                 )
+                continue
+
+            valid_emails.append(
+                {
+                    "id": msg["id"],
+                    "sender": sender,
+                    # An ATS sends as no-reply@vendor and sets Reply-To to the
+                    # recruiter who actually owns the requisition. It is the
+                    # single best "who do I answer?" signal in the message,
+                    # and was previously read and discarded.
+                    "reply_to": _header(headers, "Reply-To", ""),
+                    # Cc frequently carries the second recruiter on a thread
+                    # or the hiring manager being looped in.
+                    "cc": _header(headers, "Cc", ""),
+                    "to": _header(headers, "To", ""),
+                    "subject": subject,
+                    "snippet": snippet,
+                    "body": body,
+                    # Epoch milliseconds, as a string, straight from Gmail.
+                    "internal_date": int(msg_data.get("internalDate", 0)),
+                }
+            )
 
         # Oldest first: see the docstring. Without this the last email applied
         # is the earliest one, so an offer gets overwritten by the original
@@ -519,12 +609,13 @@ def fetch_job_emails(user_id: int, max_results: int = None) -> list[dict]:
         valid_emails.sort(key=lambda email: email["internal_date"])
 
         logger.info(
-            "Gmail scan for user %s: %s fetched, %s passed the filter",
+            "Gmail scan for user %s: %s fetched, %s passed the filter, %s dropped",
             user_id,
             len(messages),
             len(valid_emails),
+            len(dropped),
         )
-        return valid_emails
+        return Scan(valid_emails, dropped)
 
     except GmailAuthError:
         raise

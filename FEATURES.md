@@ -676,7 +676,11 @@ nothing else — it cannot send, delete, or modify anything.
    a repeat sync costs nothing and cannot duplicate notes.
 3. A keyword rule filter runs next, so newsletters never reach a paid call. It
    matches phrases rather than bare words, because "offer" alone also matches
-   "limited time offer" — exactly the marketing mail it exists to exclude.
+   "limited time offer" — exactly the marketing mail it exists to exclude. Mail
+   you sent yourself is rejected here too: your own replies to recruiters match
+   every content rule there is, and used to be classified at full cost before
+   being discarded further down as "not an update on an application you
+   submitted".
 4. What survives is classified by Gemini in a single call into a status, a
    company, a role, the recruiter's name, address and phone, what you have to do
    next, and any deadline the message sets. All of it comes from one request —
@@ -688,6 +692,17 @@ nothing else — it cannot send, delete, or modify anything.
 is not a tracker status, it is not about an application you submitted, it looks
 like phishing, no usable company name, or confidence below threshold. "Skipped"
 as a bare number is not actionable; knowing *which* tells you what to improve.
+
+**What the rule filter threw away.** Step 3 rejects mail before any model sees
+it, so a genuine recruiter email it gets wrong never happens as far as the rest
+of the system is concerned. Every rejection is now logged by name with the rule
+that caused it — `DROPPED <id> | from=… subject=… | blocked word 'job alert'` —
+and the run reports how many of how many it considered. Turn on **Show mail the
+filter rejected before classifying it** in the Activity tab to read them.
+
+This is worth checking when an application you expected never appeared. A
+blocked word is matched against the message body as well as its subject, so an
+otherwise genuine email can be rejected by its own footer.
 
 **An email that names no employer.** Interview invitations frequently carry a
 role, a time and a meeting link and name no company at all — and when HR writes
@@ -776,6 +791,12 @@ is one click rather than one trip back to Gmail.
 **Why it exists.** Hosted, log files sit on a VM behind SSH, which in practice
 means nobody reads them. Every automated status change is an unattended
 decision about your data, so it belongs somewhere you can actually see it.
+
+**Two filters, and both of them explain themselves.** "Show only decisions"
+hides the progress lines. "Show mail the filter rejected before classifying it"
+reveals the messages the rule filter dropped before any model call — off by
+default, because a noisy inbox produces a lot of them and they answer a
+different question from what the sync did.
 
 ---
 

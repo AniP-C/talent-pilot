@@ -56,3 +56,60 @@ def test_detach_leaves_the_shared_logger_clean():
     assert handler in sync_logger.handlers
     sc._detach_user_sync_log(handler)
     assert list(sync_logger.handlers) == before
+
+
+# =====================================================================
+# WHAT THE BOUNCER THREW AWAY
+#
+# The rule filter runs before any model call and used to drop in silence. Its
+# one log line went to the shared ops log untagged, so `_RunFilter` could not
+# pass it into a user's file even in principle — the counts existed and were
+# unreachable. These pin the path from a dropped message to the Activity tab.
+# =====================================================================
+def test_a_dropped_message_reaches_the_users_own_log(monkeypatch, tmp_path):
+    from integrations.gmail_client import Scan
+
+    monkeypatch.setattr(sc, "mailbox_address", lambda user_id: "me@example.com")
+    monkeypatch.setattr(
+        sc,
+        "fetch_job_emails",
+        lambda user_id, own_address="": Scan(
+            emails=[],
+            dropped=[
+                {
+                    "id": "abc123",
+                    "sender": "Aarya from foundit <jobmessenger@monsterindia.com>",
+                    "subject": "2 jobs that you haven't applied yet",
+                    "reason": "blocked word 'job alert'",
+                }
+            ],
+        ),
+    )
+
+    summary = sc.sync_inbox_to_db(505)
+    text = workspace.sync_log_path(505).read_text(encoding="utf-8")
+
+    assert "DROPPED abc123" in text
+    assert "monsterindia.com" in text
+    assert "blocked word 'job alert'" in text
+    # And the counts the summary reports, so the sidebar can say it too.
+    assert summary["dropped"] == 1
+    assert summary["considered"] == 1
+    assert summary["fetched"] == 0
+
+
+def test_a_clean_scan_says_nothing_about_the_bouncer(monkeypatch):
+    """No drops, no noise. The line only appears when it has something to say."""
+    from integrations.gmail_client import Scan
+
+    monkeypatch.setattr(sc, "mailbox_address", lambda user_id: "")
+    monkeypatch.setattr(
+        sc, "fetch_job_emails", lambda user_id, own_address="": Scan([], [])
+    )
+
+    summary = sc.sync_inbox_to_db(606)
+    text = workspace.sync_log_path(606).read_text(encoding="utf-8")
+
+    assert "DROPPED" not in text
+    assert "Bouncer:" not in text
+    assert summary["dropped"] == 0

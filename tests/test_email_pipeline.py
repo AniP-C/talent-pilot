@@ -6,7 +6,7 @@ import pytest
 
 from ai.email_classifier import to_status
 from config import VALID_STATUSES
-from integrations.gmail_client import is_high_probability_job_email
+from integrations.gmail_client import is_high_probability_job_email, screen_email
 from sync_controller import _email_date
 
 
@@ -75,6 +75,88 @@ def test_blacklist_beats_a_matching_ats_domain():
 
 def test_handles_empty_input():
     assert is_high_probability_job_email("", "", "") is False
+
+
+# =====================================================================
+# THE BOUNCER EXPLAINS ITSELF
+#
+# This filter runs before any model call, so a message it rejects never
+# happens as far as the rest of the system is concerned. Until it named its
+# reasons there was no way, even in principle, to find out which genuine
+# recruiter mail it was throwing away.
+# =====================================================================
+def test_a_drop_names_the_rule_that_dropped_it():
+    verdict = screen_email("jobs@indeed.com", "Your weekly job alert", "10 new jobs")
+
+    assert verdict.passed is False
+    assert "job alert" in verdict.reason
+
+
+def test_a_pass_names_the_rule_that_passed_it():
+    assert screen_email(
+        "no-reply@greenhouse.io", "Your application", "Thanks for applying"
+    ).reason == "ATS sender greenhouse.io"
+
+
+def test_mail_with_no_signal_at_all_says_so():
+    assert "no recruiting signal" in screen_email("a@b.com", "Hello", "Hi").reason
+
+
+def test_the_boolean_wrapper_still_answers_the_old_question():
+    """Callers that only want yes or no are unchanged."""
+    assert is_high_probability_job_email("careers@acme.com", "Update", "") is True
+    assert is_high_probability_job_email("a@b.com", "Hello", "") is False
+
+
+# =====================================================================
+# THE USER'S OWN SENT MAIL
+#
+# Their replies to recruiters match every content rule there is — they are
+# about an application and they quote the thread — so they were fetched,
+# classified at cost, and only then discarded downstream as "not an update on
+# an application this user submitted". Seven such calls across three syncs in
+# the log that prompted this.
+# =====================================================================
+def test_your_own_reply_is_rejected_before_it_costs_anything():
+    verdict = screen_email(
+        "Ani Py <anipy2000@gmail.com>",
+        "Re: Career Opportunity - Forward Deployed AI Engineer",
+        "Thanks for reaching out, I am interested in the role.",
+        own_address="anipy2000@gmail.com",
+    )
+
+    assert verdict.passed is False
+    assert verdict.reason == "sent from your own address"
+
+
+def test_your_own_address_is_matched_however_the_header_is_written():
+    """Gmail writes From as a display name plus an angle-bracketed address."""
+    for sender in (
+        "anipy2000@gmail.com",
+        "Ani Py <anipy2000@gmail.com>",
+        "Ani Py <ANIPY2000@Gmail.com>",
+    ):
+        assert (
+            screen_email(sender, "Application", "", own_address="anipy2000@gmail.com")
+            .passed
+            is False
+        )
+
+
+def test_a_recruiter_at_a_different_address_is_not_mistaken_for_you():
+    assert screen_email(
+        "recruiter@acme.com",
+        "Your application",
+        "We would like to speak with you.",
+        own_address="anipy2000@gmail.com",
+    ).passed is True
+
+
+def test_without_a_known_address_nothing_is_excluded_for_being_yours():
+    """mailbox_address is best-effort; a failure must not filter the inbox."""
+    assert screen_email(
+        "Ani Py <anipy2000@gmail.com>", "Application", "About the role"
+    ).passed is True
 
 
 # =====================================================================

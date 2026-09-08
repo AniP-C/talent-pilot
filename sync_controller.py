@@ -147,10 +147,44 @@ def _run_sync(
     logger.info("[sync %s] Starting inbox sync for user %s", run_id, user_id)
     report("Fetching recent emails…")
 
-    emails = fetch_job_emails(user_id)
+    # Read before the fetch, not after. The bouncer needs it to recognise the
+    # user's own replies, which otherwise pass every content rule there is —
+    # they are about an application and they quote the thread — and were being
+    # classified at cost before anything downstream discarded them.
+    own_address = mailbox_address(user_id)
+
+    scan = fetch_job_emails(user_id, own_address=own_address)
+    emails = scan.emails
+
+    # Every message the bouncer threw away, named, with the rule that threw it.
+    # This filter runs before any model call and used to drop in silence, so a
+    # genuine recruiter email it rejected never happened as far as the rest of
+    # the system was concerned — and there was no way, even in principle, to
+    # find out which ones. A blocked word matches the body as well as the
+    # subject, so an ATS template with the wrong footer is a plausible loss.
+    for message in scan.dropped:
+        decision(
+            "DROPPED %s | from=%r subject=%r | %s",
+            message["id"],
+            message["sender"],
+            message["subject"],
+            message["reason"],
+        )
+
+    if scan.dropped:
+        decision(
+            "Bouncer: %s of %s message(s) did not look like application mail",
+            len(scan.dropped),
+            scan.considered,
+        )
 
     summary = {
         "fetched": len(emails),
+        # What the mailbox search returned, before the bouncer. Reported apart
+        # from "fetched" because the two used to be the same number in the
+        # summary, and a filter you cannot see the input to cannot be judged.
+        "considered": scan.considered,
+        "dropped": len(scan.dropped),
         "updated": 0,
         "created": 0,
         # A further message about the stage an application is already at — the
@@ -193,11 +227,6 @@ def _run_sync(
         return summary
 
     report(f"Classifying {len(pending)} new emails…")
-
-    # Read once per run, not once per email. Needed so the user's own address
-    # never becomes the recruiter contact — it is in To, in Cc, and quoted in
-    # the body of nearly every application confirmation.
-    own_address = mailbox_address(user_id)
 
     for index, email in enumerate(pending):
         # Throttle *between* calls, not after the last one, so a single-email
