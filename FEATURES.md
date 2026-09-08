@@ -700,9 +700,15 @@ that caused it — `DROPPED <id> | from=… subject=… | blocked word 'job aler
 and the run reports how many of how many it considered. Turn on **Show mail the
 filter rejected before classifying it** in the Activity tab to read them.
 
-This is worth checking when an application you expected never appeared. A
-blocked word is matched against the message body as well as its subject, so an
-otherwise genuine email can be rejected by its own footer.
+This is worth checking when an application you expected never appeared.
+
+**What the bulk-mail list may reject.** The sender and the subject, and never
+the body — a footer is not what a message is about. It matches phrases rather
+than bare words, and nothing that could also be somebody's job: "marketing" and
+"campaign" used to be on it, which rejected every confirmation for anyone
+applying to a marketing role. The one exception is a short list of footer
+phrases like "unsubscribe from job alerts", which no genuine one-to-one
+recruiter email contains.
 
 **An email that names no employer.** Interview invitations frequently carry a
 role, a time and a meeting link and name no company at all — and when HR writes

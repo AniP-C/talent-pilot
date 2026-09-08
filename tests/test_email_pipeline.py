@@ -78,6 +78,75 @@ def test_handles_empty_input():
 
 
 # =====================================================================
+# WHAT THE BULK-MAIL LIST IS ALLOWED TO REJECT
+#
+# It used to be bare words checked against the sender, the subject and the
+# first 1500 characters of the body at once, and it beats every other signal.
+# That gave three ways to lose a real application, one per test below.
+# =====================================================================
+def test_a_recruiter_proposing_a_weekly_sync_is_not_a_newsletter():
+    """"weekly" as a bare word took down any message that used the word."""
+    assert screen_email(
+        "recruiter@acme.com",
+        "Your application - next steps",
+        "We hold a weekly sync on Mondays and would like you to join Thursday's.",
+    ).passed is True
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "Application for Marketing Manager",
+        "Your application - Campaign Strategist",
+        "Interview - Marketing Campaign Analyst",
+    ],
+)
+def test_marketing_and_campaign_are_job_titles_not_spam_words(subject):
+    """Anyone applying for a marketing role had every confirmation rejected."""
+    assert screen_email("careers@acme.com", subject, "Thanks for applying.").passed
+
+
+def test_a_footer_does_not_outrank_the_subject_and_the_sender():
+    """The body is not what a message is about.
+
+    A blocked word beats every other signal, so one wrong word in an ATS
+    template footer outranked "Your application" in the subject and a
+    greenhouse.io sender — and the message was never classified.
+    """
+    body = (
+        "Thanks for applying to Acme. We will be in touch.\\n\\n"
+        "-- \\nAcme Talent. You are receiving this because you applied. "
+        "Read our weekly newsletter digest or update your marketing preferences."
+    )
+
+    assert screen_email(
+        "no-reply@greenhouse.io", "Your application to Acme", body
+    ).passed is True
+
+
+def test_a_real_blast_is_still_rejected_by_its_footer():
+    """The narrow body markers stay: no genuine one-to-one mail says this."""
+    verdict = screen_email(
+        "alerts@somejobsite.com",
+        "5 roles picked for you",
+        "Here are today's roles.\\n\\nTo unsubscribe from job alerts, click here.",
+    )
+
+    assert verdict.passed is False
+    assert "unsubscribe from job" in verdict.reason
+
+
+def test_the_subject_still_gives_a_blast_away():
+    for sender, subject in [
+        ("jobs@indeed.com", "Your weekly job alert"),
+        ("news@medium.com", "Your daily digest"),
+        ("hello@site.com", "This week's newsletter"),
+        ("noreply@board.com", "Jobs for you this week"),
+    ]:
+        assert screen_email(sender, subject, "").passed is False
+
+
+# =====================================================================
 # THE BOUNCER EXPLAINS ITSELF
 #
 # This filter runs before any model call, so a message it rejects never

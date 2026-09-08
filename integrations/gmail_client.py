@@ -282,16 +282,43 @@ def mailbox_address(user_id: int) -> str:
         return ""
 
 
-BLACKLIST = [
+# Bulk mail declares itself in who sent it and what the subject says. Matched
+# against those two only — never the body.
+#
+# This list used to be bare words checked against the sender, the subject and
+# the first 1500 characters of the body together, which made three separate
+# ways to lose a real application:
+#
+#   "weekly"    — a recruiter proposing a weekly sync, or any ATS footer
+#                 mentioning a weekly anything, took the whole message down.
+#   "marketing"
+#   "campaign"  — both are job titles. Anyone applying for a marketing role had
+#                 every confirmation about it rejected before it was read.
+#   body text   — the blacklist wins over every other signal, so one wrong word
+#                 in a template footer outranked "Your application" in the
+#                 subject and an ATS domain in the sender.
+#
+# Phrases, therefore, and only ones that cannot also be someone's job.
+MARKETING_PHRASES = [
     "newsletter",
+    "marketing@",
+    "promotions@",
     "job alert",
     "job alerts",
-    "digest",
-    "marketing",
-    "weekly",
-    "campaign",
+    "jobs for you",
+    "job digest",
+    "daily digest",
+    "weekly digest",
+    "weekly roundup",
+    "weekly job",
+]
+
+# The exception, matched against the body as well: phrases that cannot occur in
+# a genuine one-to-one recruiter email, only in the footer of a blast.
+MARKETING_BODY_MARKERS = [
     "unsubscribe from job",
-    "promotions",
+    "unsubscribe from these job",
+    "manage your job alerts",
 ]
 
 ATS_DOMAINS = [
@@ -366,7 +393,10 @@ def screen_email(
     """
     sender_lower = (sender or "").lower()
     content_lower = f"{subject or ''} {snippet or ''}".lower()
-    combined = f"{sender_lower} {content_lower}"
+    # The body reaches this function as part of ``snippet``, which is what lets
+    # a bland subject still pass on its contents. The blacklist deliberately
+    # does not see it: a footer is not what a message is about.
+    header_lower = f"{sender_lower} {(subject or '').lower()}"
 
     # Mail the user sent themselves. Their own replies to recruiters match
     # every content rule below — they are about an application, they quote the
@@ -376,11 +406,15 @@ def screen_email(
     if own_address and _sender_address(sender) == own_address.strip().lower():
         return Screening(False, "sent from your own address")
 
-    # Blacklist wins over every other signal — marketing blasts often contain
-    # the same words as genuine recruiter mail.
-    for word in BLACKLIST:
-        if word in combined:
-            return Screening(False, f"blocked word {word!r}")
+    # Bulk mail wins over every other signal — a marketing blast from an ATS
+    # domain is still a marketing blast.
+    for phrase in MARKETING_PHRASES:
+        if phrase in header_lower:
+            return Screening(False, f"bulk mail: {phrase!r} in the sender or subject")
+
+    for phrase in MARKETING_BODY_MARKERS:
+        if phrase in content_lower:
+            return Screening(False, f"bulk mail: {phrase!r}")
 
     for domain in ATS_DOMAINS:
         if domain in sender_lower:
