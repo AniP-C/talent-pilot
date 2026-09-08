@@ -38,6 +38,28 @@ EXCLUDE_DIRS = {"node_modules", "__pycache__", ".git"}
 # one person's contact details; this makes a regression loud instead of silent.
 FORBIDDEN = ["anipy2000", "7900842067", "aniruddh", "parashar"]
 
+# Host permissions that exist for local development and must not reach a user.
+#
+# The manifest in the repo grants http://localhost:8000 so an unpacked build can
+# be pointed at an API running on the same machine. Shipped, it is a permission
+# every install carries and nobody uses, and a reviewer reads it as exactly what
+# it is — a debugging leftover. Stripped here rather than deleted from the
+# manifest so loading extension/ unpacked still works with no local edit.
+DEV_ONLY_HOST_PREFIXES = ("http://localhost", "http://127.0.0.1", "https://localhost")
+
+
+def shipped_manifest(manifest: dict) -> tuple[dict, list[str]]:
+    """The manifest as users receive it, and what was taken out of it."""
+    shipped = json.loads(json.dumps(manifest))
+
+    hosts = shipped.get("host_permissions", [])
+    stripped = [h for h in hosts if h.startswith(DEV_ONLY_HOST_PREFIXES)]
+
+    if stripped:
+        shipped["host_permissions"] = [h for h in hosts if h not in stripped]
+
+    return shipped, stripped
+
 
 def collect() -> list[Path]:
     files = []
@@ -101,6 +123,7 @@ def main() -> int:
     files = collect()
     manifest = check_manifest(files)
     check_no_personal_data(files)
+    shipped, stripped = shipped_manifest(manifest)
 
     DIST.mkdir(exist_ok=True)
     archive = DIST / f"talent-pilot-extension-{manifest['version']}.zip"
@@ -109,6 +132,12 @@ def main() -> int:
     # folder, so paths are stored relative to extension/.
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
         for path in files:
+            # The manifest is written from the stripped copy rather than copied
+            # off disk, so the file the store reads is the one checked above
+            # minus anything that was only ever for local development.
+            if path.name == "manifest.json" and path.parent == SOURCE:
+                bundle.writestr("manifest.json", json.dumps(shipped, indent=2) + "\n")
+                continue
             bundle.write(path, path.relative_to(SOURCE))
 
     print(f"{manifest['name']} v{manifest['version']}")
@@ -117,6 +146,17 @@ def main() -> int:
 
     for path in files:
         print(f"    {path.relative_to(SOURCE)}")
+
+    if stripped:
+        print("\n  Development-only host permissions left out of the package:")
+        for host in stripped:
+            print(f"    - {host}")
+
+    print("\n  Host permissions users will be asked for:")
+    for host in shipped.get("host_permissions", []):
+        print(f"    - {host}")
+    for host in shipped.get("optional_host_permissions", []):
+        print(f"    - {host} (optional, requested per site)")
 
     print("\nChecks passed: manifest complete, no personal data, icons present.")
     return 0

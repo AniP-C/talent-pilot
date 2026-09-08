@@ -68,6 +68,15 @@ WHAT IT DOES
 • Drafts replies to long-form questions using your resume and your own
   previously saved answers, so it sounds like you.
 
+• Answers a question you were asked anywhere. Type it into the popup — or
+  select it on any page and right-click "Draft an answer for…" — and get a
+  reply written from your resume. Useful when the question arrives in an email
+  or a message rather than in a form.
+
+• Revises a draft without starting over: make it shorter, make it longer,
+  rephrase it, or sharpen it to the role. Say what to change in your own words
+  if the buttons do not cover it, and undo puts the previous version back.
+
 • Shows which applications have gone quiet, so you know which ones are worth
   following up rather than guessing.
 
@@ -85,7 +94,8 @@ PRIVACY
 
 Your data stays yours. The extension holds no personal details of its own, it
 sends nothing anywhere except to your own account, and it fills a field only
-when you click to fill it. Full privacy policy:
+when you click to fill it. Text you select and send with the right-click entry
+goes to your account only after you click Draft. Full privacy policy:
 https://katchjobs.online/privacy
 ```
 
