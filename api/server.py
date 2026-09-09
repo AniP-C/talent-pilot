@@ -359,6 +359,7 @@ def health() -> dict:
 # Chrome Web Store listing points here, and a reviewer must be able to load it
 # without an account, so it is deliberately unauthenticated.
 _PRIVACY_PAGE = Path(__file__).resolve().parent.parent / "static" / "privacy.html"
+_SUPPORT_PAGE = Path(__file__).resolve().parent.parent / "static" / "support.html"
 
 
 @app.get("/privacy", response_class=HTMLResponse)
@@ -369,6 +370,22 @@ def privacy_policy() -> HTMLResponse:
     except OSError:
         logger.error("Privacy policy missing at %s", _PRIVACY_PAGE)
         raise HTTPException(status_code=500, detail="Privacy policy unavailable.") from None
+
+
+@app.get("/support", response_class=HTMLResponse)
+def support_page() -> HTMLResponse:
+    """Where the store listing's Support URL points. Public, like /privacy.
+
+    A support address on its own would do for the listing field, but it answers
+    only the questions somebody has already decided to write an email about.
+    Most of what people get stuck on has a short answer, and a page can give it
+    at the moment they are stuck.
+    """
+    try:
+        return HTMLResponse(_SUPPORT_PAGE.read_text(encoding="utf-8"))
+    except OSError:
+        logger.error("Support page missing at %s", _SUPPORT_PAGE)
+        raise HTTPException(status_code=500, detail="Support page unavailable.") from None
 
 
 # =====================================================================

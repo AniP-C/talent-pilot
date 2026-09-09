@@ -707,6 +707,25 @@ def test_privacy_policy_covers_what_the_store_requires():
     assert "@" in body
 
 
+def test_support_page_is_public():
+    """The listing's Support URL points here and a reviewer has no account."""
+    response = client.get("/support")
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+
+
+def test_support_page_gives_somewhere_to_write_and_a_way_out():
+    """A support page with no address is a wall with a sign on it."""
+    body = client.get("/support").text
+
+    assert "@" in body
+    assert "delete" in body.lower()
+    # Reviewers follow the links on a page they are sent to; a broken one on
+    # the support page is a broken one on the item.
+    assert "/privacy" in body
+
+
 # =====================================================================
 # REVISING A DRAFT
 # =====================================================================

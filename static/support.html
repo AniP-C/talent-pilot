@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Support — Talent Pilot</title>
+<style>
+  :root { --ink:#1f2328; --muted:#5b6570; --accent:#0073b1; --border:#e3e7ec; --bg:#fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink:#e6e9ee; --muted:#a3adb8; --accent:#5cb3e8; --border:#2b3138; --bg:#14171a; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2.5rem 1.25rem 5rem;
+    background: var(--bg); color: var(--ink);
+    font: 16px/1.65 -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  }
+  main { max-width: 46rem; margin: 0 auto; }
+  h1 { font-size: 1.9rem; margin: 0 0 .35rem; letter-spacing: -.02em; }
+  h2 {
+    font-size: 1.15rem; margin: 2.4rem 0 .7rem; padding-bottom: .35rem;
+    border-bottom: 1px solid var(--border);
+  }
+  h3 { font-size: 1rem; margin: 1.5rem 0 .4rem; }
+  p, li { color: var(--ink); }
+  .lede { color: var(--muted); margin: 0 0 .25rem; }
+  .updated { color: var(--muted); font-size: .875rem; margin: 0 0 2rem; }
+  a { color: var(--accent); }
+  ul { padding-left: 1.25rem; }
+  li { margin: .3rem 0; }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: .93rem; }
+  th, td { text-align: left; padding: .55rem .6rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-weight: 600; }
+  .wrap { overflow-x: auto; }
+  .callout {
+    border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    border-radius: 6px; padding: .85rem 1rem; margin: 1.25rem 0;
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+  }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: .9em; }
+  footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); color: var(--muted); font-size: .875rem; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Support</h1>
+<p class="lede">Talent Pilot — job application tracker and browser extension</p>
+<p class="updated">Last updated: 9 September 2026</p>
+
+<div class="callout">
+  <strong>Need a person?</strong> Email
+  <a href="mailto:anipy2000@gmail.com">anipy2000@gmail.com</a>. Include what you
+  were doing and what happened instead. If it is about the extension, the
+  version number from <code>chrome://extensions</code> saves a round trip.
+</div>
+
+<h2>Getting started</h2>
+
+<ol>
+  <li><strong>Make an account</strong> at
+      <a href="https://katchjobs.online">katchjobs.online</a>, then sign in to the
+      extension from its popup. The extension stores no personal details of its
+      own — everything it knows comes from your account.</li>
+  <li><strong>Upload a resume.</strong> Open the extension popup, expand
+      <em>Upload a resume</em>, and give it a PDF. It is read once and turned
+      into a structured profile. Everything else — match scores, drafted
+      answers — reads that profile.</li>
+  <li><strong>Fill in your application answers</strong> on the dashboard, under
+      <em>Application answers</em>. These are the questions every form asks:
+      notice period, work authorisation, availability. Answered once, they are
+      suggested from then on, and they cost nothing to reuse.</li>
+</ol>
+
+<h2>Common problems</h2>
+
+<h3>"No job posting detected on this page"</h3>
+<p>
+  The extension reads job pages on the sites listed in its manifest. On any
+  other site, open the popup and click <em>Enable Copilot on this site</em>,
+  which grants access to that one site and nothing else. If the site is already
+  enabled, reload the page — a tab opened before the permission was granted has
+  no reader in it.
+</p>
+<p>
+  Some pages genuinely do not say who the employer is. When that happens the
+  popup asks you rather than guessing, because a wrong company name splits one
+  application into two rows that never reconcile.
+</p>
+
+<h3>The match card does not appear</h3>
+<p>
+  It is shown only while you are signed in, and it has an off switch in the
+  extension's Settings panel. Check both. The score it shows is plain keyword
+  matching done on your own server — no AI call, and nothing is charged for it.
+</p>
+
+<h3>A drafted answer is empty</h3>
+<p>
+  Questions asking for a fact about you — your current salary, your notice
+  period, where you live — are deliberately never invented. If nothing is saved
+  that answers one, the extension says which detail to fill in rather than
+  producing a plausible wrong number that nobody checks before submitting. Add
+  it under <em>Application answers</em> and it is filled in from then on.
+</p>
+
+<h3>An application I expected is not in my tracker</h3>
+<p>
+  If you connected Gmail, open <em>Activity</em> on the dashboard and turn on
+  <em>Show mail the filter rejected before classifying it</em>. A rule filter
+  runs before anything else and drops bulk mail; every rejection is listed there
+  with the rule that caused it. If a real message is in that list, email us the
+  line and the rule gets fixed.
+</p>
+
+<h3>Sign-in fails, or the popup says the server is unreachable</h3>
+<p>
+  Open the extension's Settings panel and check the API address. It should be
+  <code>https://katchjobs.online</code> unless you are running your own server.
+</p>
+
+<h2>Your data</h2>
+
+<p>
+  What is collected and why is set out in full in the
+  <a href="/privacy">privacy policy</a>. In short: your data goes to your own
+  account and nowhere else, resume text and job descriptions are processed by
+  Google Gemini to produce scores and drafts, and you can export or delete
+  everything from the dashboard's Settings tab at any time.
+</p>
+
+<p>
+  To delete your account and everything in it, use <em>Settings → Delete
+  account</em> on the dashboard, or email the address above and ask.
+</p>
+
+<h2>Reporting a bug</h2>
+
+<p>
+  Email <a href="mailto:anipy2000@gmail.com">anipy2000@gmail.com</a>. What helps:
+</p>
+
+<ul>
+  <li>What you were doing, and what you expected instead.</li>
+  <li>The page you were on, if it is a public job posting.</li>
+  <li>The extension version, from <code>chrome://extensions</code>.</li>
+  <li>Anything in the browser console, if you are comfortable opening it.</li>
+</ul>
+
+<p>
+  Please do not include passwords or anything from a private application form.
+  Nothing about your account is needed to look into a bug beyond the address you
+  signed up with.
+</p>
+
+<footer>
+  Talent Pilot · <a href="https://katchjobs.online">katchjobs.online</a> ·
+  <a href="/privacy">Privacy policy</a>
+</footer>
+
+</main>
+</body>
+</html>

@@ -103,6 +103,24 @@ goes to your account only after you click Draft. Full privacy policy:
 https://katchjobs.online/privacy
 ```
 
+## URLs the listing asks for
+
+Both are on the **Store listing** tab, under Additional fields. Neither is
+required to publish, and both are worth filling: an item with no support route
+is one a reviewer has to take on trust, and a user with a problem and nowhere
+to send it uninstalls instead of writing.
+
+| Field | Value |
+| ----- | ----- |
+| Homepage URL | `https://katchjobs.online` |
+| Support URL | `https://katchjobs.online/support` |
+| Privacy policy URL (Privacy practices tab) | `https://katchjobs.online/privacy` |
+
+All three are served by the API from `static/`, so they ship with a **server**
+deploy and not with the extension package. A URL entered in the listing before
+the server is deployed is a 404 to whoever opens it first, and the reviewer is
+usually first.
+
 ## Single purpose statement
 
 ```
