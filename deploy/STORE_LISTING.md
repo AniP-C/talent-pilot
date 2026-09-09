@@ -90,6 +90,10 @@ works for anybody who signs in.
 It runs on job posting and application pages. For any other site, you can turn
 it on from the popup, which grants access to that one site and nothing else.
 
+Asking a question is the exception, and deliberately so: the popup works on any
+tab, and the right-click entry works on any page, because neither reads the page
+— you hand over the question yourself.
+
 PRIVACY
 
 Your data stays yours. The extension holds no personal details of its own, it
