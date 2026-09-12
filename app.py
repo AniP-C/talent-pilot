@@ -613,10 +613,22 @@ def render_dashboard(user: auth.User, db_path) -> None:
         # absence of one.
         fit=filtered["match_score"].map(ui.percentage),
         keywords=filtered["keyword_score"].map(ui.percentage),
+        # When this application last moved, which is the question "Applied"
+        # cannot answer. Two rows applied the same day are not in the same
+        # situation if one heard back on Friday and the other has been silent
+        # since — and that difference is what decides which to chase.
+        #
+        # Stored as a UTC timestamp; shown as a date, because the hour an
+        # employer's mail happened to arrive is noise at this altitude.
+        updated=pd.to_datetime(filtered["updated_at"], errors="coerce"),
+        # Straight to the message that caused the most recent update. The
+        # tracker already knows an assessment was requested; without this the
+        # user still has to go and find the mail that says so.
+        email=filtered["last_email_id"].map(ui.gmail_message_url),
     )[
         [
             "company", "role", "status", "fit", "keywords", "where", "pay",
-            "resume", "date_applied", "source", "link",
+            "resume", "date_applied", "updated", "source", "link", "email",
         ]
     ]
 
@@ -644,10 +656,27 @@ def render_dashboard(user: auth.User, db_path) -> None:
             "date_applied": st.column_config.DateColumn(
                 "Applied", width="small", format="DD MMM YYYY"
             ),
+            "updated": st.column_config.DateColumn(
+                "Updated",
+                width="small",
+                format="DD MMM YYYY",
+                help="When this application last changed — a new email, an "
+                     "edit, or a fresh analysis.",
+            ),
             "source": st.column_config.TextColumn("Source", width="small"),
             # Rows the tracker only learned about by email have no posting URL
             # unless one turned up in the message, so this is routinely blank.
             "link": st.column_config.LinkColumn("Posting", display_text="Open ↗"),
+            # Blank on rows the extension saved from a posting, and on any
+            # update that predates the field — the ids of already-processed
+            # emails were never stored, so there is nothing to point at.
+            "email": st.column_config.LinkColumn(
+                "Email",
+                width="small",
+                display_text="Open ↗",
+                help="Opens the message behind the most recent update, in "
+                     "Gmail. Blank where the update did not come from email.",
+            ),
         },
     )
     st.caption(f"Showing {len(filtered)} of {len(frame)} applications.")

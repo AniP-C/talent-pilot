@@ -139,6 +139,17 @@ SUPPORT_URL = f"{SITE_URL}/support"
 # and is settable because a fork of this should not mail me.
 CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", "").strip() or "anipy2000@gmail.com"
 
+# Which signed-in Google account the dashboard's "Email" links should open —
+# the N in Gmail's /mail/u/N/ URLs. Gmail assigns that number by the order
+# accounts were added to the browser, and exposes it nowhere we can read, so
+# it cannot be derived from the synced address; someone whose work account is
+# their second sign-in sets this to 1. 0 is correct for a single account.
+try:
+    GMAIL_ACCOUNT_INDEX = int(os.getenv("GMAIL_ACCOUNT_INDEX", "0"))
+except ValueError:
+    # A typo here should not take the dashboard down over a convenience link.
+    GMAIL_ACCOUNT_INDEX = 0
+
 # The Chrome Web Store listing. Held here, once, so the sidebar, the settings
 # tab and the signed-out page cannot drift apart or go stale separately.
 # Deliberately without the `authuser` and `hl` parameters the store hands out

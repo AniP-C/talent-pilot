@@ -231,3 +231,120 @@ def test_newer_schema_is_refused(jobs_db):
 
     with pytest.raises(RuntimeError, match="newer version"):
         db.create_table(jobs_db)
+
+
+# =====================================================================
+# SOURCE EMAIL LINK (v7)
+# =====================================================================
+def test_email_id_is_recorded_on_a_created_row(jobs_db):
+    db.update_job_from_email(
+        "NewCo", "ASSESSMENT", "Take-home", "Sent an assessment",
+        message_id="18f2c0abc", db_path=jobs_db,
+    )
+
+    assert db.get_all_jobs(db_path=jobs_db)[0]["last_email_id"] == "18f2c0abc"
+
+
+def test_email_id_is_recorded_on_an_updated_row(jobs_db):
+    job_id = db.add_job("Acme", "Engineer", db_path=jobs_db)
+
+    db.update_job_from_email(
+        "Acme", "INTERVIEW", "Interview invite", "Recruiter proposed times",
+        message_id="18f2c0def", db_path=jobs_db,
+    )
+
+    assert db.get_job(job_id, db_path=jobs_db)["last_email_id"] == "18f2c0def"
+
+
+def test_newest_email_id_replaces_the_previous_one(jobs_db):
+    """The point of the field is "what happened most recently".
+
+    A stale id would open the confirmation receipt instead of the assessment
+    request that is the reason to look, so newest must win — the opposite of
+    the rule `link` follows.
+    """
+    job_id = db.add_job("Acme", "Engineer", db_path=jobs_db)
+
+    db.update_job_from_email(
+        "Acme", "ASSESSMENT", "Take-home", "Assessment sent",
+        message_id="older", db_path=jobs_db,
+    )
+    db.update_job_from_email(
+        "Acme", "INTERVIEW", "Interview invite", "Times proposed",
+        message_id="newer", db_path=jobs_db,
+    )
+
+    assert db.get_job(job_id, db_path=jobs_db)["last_email_id"] == "newer"
+
+
+def test_an_email_without_an_id_keeps_the_stored_one(jobs_db):
+    """A manual call must not blank a link the sync had already established."""
+    job_id = db.add_job("Acme", "Engineer", db_path=jobs_db)
+
+    db.update_job_from_email(
+        "Acme", "ASSESSMENT", "Take-home", "Assessment sent",
+        message_id="kept", db_path=jobs_db,
+    )
+    db.update_job_from_email(
+        "Acme", "INTERVIEW", "Interview invite", "Times proposed",
+        db_path=jobs_db,
+    )
+
+    assert db.get_job(job_id, db_path=jobs_db)["last_email_id"] == "kept"
+
+
+def test_history_rows_cite_the_email_they_came_from(jobs_db):
+    db.add_job("Acme", "Engineer", db_path=jobs_db)
+
+    db.update_job_from_email(
+        "Acme", "INTERVIEW", "Interview invite", "Times proposed",
+        message_id="18f2c0aaa", db_path=jobs_db,
+    )
+
+    with db.connect(jobs_db) as conn:
+        cited = conn.execute(
+            "SELECT message_id FROM status_history WHERE source = 'Email Sync'"
+        ).fetchone()
+
+    assert cited["message_id"] == "18f2c0aaa"
+
+
+def test_a_manual_history_row_cites_no_email(jobs_db):
+    """NULL, not "", so "no email" stays distinct from "id not captured"."""
+    db.add_job("Acme", "Engineer", db_path=jobs_db)
+
+    with db.connect(jobs_db) as conn:
+        seeded = conn.execute(
+            "SELECT message_id FROM status_history"
+        ).fetchone()
+
+    assert seeded["message_id"] is None
+
+
+def test_v6_database_gains_the_new_columns(jobs_db):
+    """A workspace created before v7 must migrate rather than break.
+
+    Mirrors what is on the live instance: the tables exist with data in them,
+    and only the version stamp says the new columns are missing.
+    """
+    db.add_job("Acme", "Engineer", db_path=jobs_db)
+
+    with db.connect(jobs_db) as conn:
+        conn.execute("ALTER TABLE jobs DROP COLUMN last_email_id")
+        conn.execute("ALTER TABLE status_history DROP COLUMN message_id")
+        conn.execute("PRAGMA user_version = 6")
+
+    db.create_table(jobs_db)
+
+    with db.connect(jobs_db) as conn:
+        jobs_columns = {r["name"] for r in conn.execute("PRAGMA table_info(jobs)")}
+        history_columns = {
+            r["name"] for r in conn.execute("PRAGMA table_info(status_history)")
+        }
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+
+    assert "last_email_id" in jobs_columns
+    assert "message_id" in history_columns
+    assert version == db.SCHEMA_VERSION
+    # The existing row survived the migration.
+    assert db.get_all_jobs(db_path=jobs_db)[0]["company"] == "Acme"

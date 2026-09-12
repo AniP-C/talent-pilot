@@ -34,7 +34,8 @@ from contacts import is_replyable  # noqa: F401
 #   v2 -> v3  adds the recruiter contact on each application
 #   v3 -> v4  adds the contact's phone number
 #   v4 -> v5  adds the posting's location and salary
-SCHEMA_VERSION = 6
+#   v6 -> v7  adds the source email id, so an update links back to the message
+SCHEMA_VERSION = 7
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -88,6 +89,15 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- stored result that is still good.
     analysis_jd_hash TEXT,
     analyzed_at      TEXT,
+    -- v7: the Gmail id of the most recent email that moved this application.
+    -- Stored so the dashboard can link a row straight back to the message that
+    -- caused it — "an assessment is needed" is only actionable if the mail
+    -- saying so is one click away, and searching the inbox for it by hand is
+    -- exactly the step the tracker exists to remove.
+    --
+    -- NULL on rows the extension saved from a posting: those were never
+    -- learned about by mail and have no message to point at.
+    last_email_id    TEXT,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
@@ -124,6 +134,10 @@ CREATE TABLE IF NOT EXISTS status_history (
     applied     INTEGER NOT NULL DEFAULT 1,
     source      TEXT NOT NULL DEFAULT 'Manual',
     reason      TEXT,
+    -- v7: which email produced this observation, where one did. The timeline
+    -- can then cite its evidence rather than asking the reader to take
+    -- "Email Sync" on trust. NULL for manual edits and migration seeds.
+    message_id  TEXT,
     occurred_at TEXT NOT NULL
 );
 
@@ -154,6 +168,7 @@ JOB_COLUMNS = [
     "match_score",
     "keyword_score",
     "analyzed_at",
+    "last_email_id",
     "created_at",
     "updated_at",
 ]
@@ -299,6 +314,25 @@ def _migrate(conn: sqlite3.Connection, db_path) -> None:
                 conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {declaration}")
                 logger.info("Added jobs.%s to %s", column, db_path)
 
+    if current < 7:
+        # Same shape as v3 to v6, now across both tables. Nothing is
+        # backfilled: the Gmail ids of emails already processed were never
+        # stored, so existing rows keep an empty link column until their next
+        # update arrives. Inventing one would be worse than leaving it blank.
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
+
+        if "last_email_id" not in existing:
+            conn.execute("ALTER TABLE jobs ADD COLUMN last_email_id TEXT")
+            logger.info("Added jobs.last_email_id to %s", db_path)
+
+        existing = {
+            row["name"] for row in conn.execute("PRAGMA table_info(status_history)")
+        }
+
+        if "message_id" not in existing:
+            conn.execute("ALTER TABLE status_history ADD COLUMN message_id TEXT")
+            logger.info("Added status_history.message_id to %s", db_path)
+
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     logger.info(
         "Schema at v%s for %s (was v%s)", SCHEMA_VERSION, db_path, current
@@ -317,16 +351,26 @@ def _record_transition(
     applied: bool,
     source: str,
     reason: str = "",
+    message_id: str = "",
 ) -> None:
     """Append one status observation. Takes an open connection deliberately,
-    so the history row and the jobs row commit or roll back together."""
+    so the history row and the jobs row commit or roll back together.
+
+    ``message_id`` is the Gmail id of the email this observation came from,
+    where it came from one. Empty is stored as NULL rather than "", so "no
+    email" and "an email whose id we failed to capture" stay distinguishable.
+    """
     conn.execute(
         """
         INSERT INTO status_history
-            (job_id, from_status, to_status, applied, source, reason, occurred_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+            (job_id, from_status, to_status, applied, source, reason,
+             message_id, occurred_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (int(job_id), from_status, to_status, 1 if applied else 0, source, reason, _utcnow()),
+        (
+            int(job_id), from_status, to_status, 1 if applied else 0, source,
+            reason, message_id or None, _utcnow(),
+        ),
     )
 
 
@@ -680,6 +724,7 @@ def update_job_from_email(
     deadline: str = "",
     email_date: str = "",
     link: str = "",
+    message_id: str = "",
 ) -> str:
     """Apply an AI-classified email to the workspace.
 
@@ -698,6 +743,12 @@ def update_job_from_email(
     ``link`` is where to click through to. It comes from an email body, so it
     has already been through ``posting.is_job_link``; see the allowlist there
     for why nothing else is accepted.
+
+    ``message_id`` is the Gmail id of this email. It is recorded on the job as
+    the most recent update's source and on the history row, so the dashboard
+    can open the message that moved an application rather than describing it.
+    Unlike ``link`` it always overwrites: the point of the field is to answer
+    "what happened most recently", so the newest message is the right one.
 
     The contact is recorded when it looks like a person — see ``contacts.py``
     for how one is chosen. ``last_contact_at`` moves either way: an automated
@@ -769,6 +820,11 @@ def update_job_from_email(
         # URL; a link out of an email is the fallback for rows the tracker only
         # ever learned about by mail, and must never displace the better one.
         "link = CASE WHEN COALESCE(link, '') = '' THEN ? ELSE link END, "
+        # The opposite rule to `link` above: newest wins. A stale id would
+        # point at the confirmation receipt instead of the assessment request
+        # that is the reason to look, so the only useful value is the latest.
+        # COALESCE keeps what is stored when this email has no id to offer.
+        "last_email_id = COALESCE(?, last_email_id), "
         "last_contact_at = ?"
     )
     contact_values = (
@@ -778,6 +834,7 @@ def update_job_from_email(
         named_phone,
         loose_phone,
         link if posting.is_job_link(link) else "",
+        message_id or None,
         now,
     )
 
@@ -821,6 +878,7 @@ def update_job_from_email(
                 applied=moves_forward,
                 source="Email Sync",
                 reason=subject,
+                message_id=message_id,
             )
 
             if repeats_stage:
@@ -849,8 +907,8 @@ def update_job_from_email(
                 INSERT INTO jobs (
                     company, role, status, date_applied, link, notes, source,
                     contact_name, contact_email, contact_phone, last_contact_at,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_email_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     company_name,
@@ -865,6 +923,7 @@ def update_job_from_email(
                     new_contact_email,
                     named_phone or loose_phone,
                     now,
+                    message_id or None,
                     now,
                     now,
                 ),
@@ -900,6 +959,7 @@ def update_job_from_email(
         _record_transition(
             conn, cursor.lastrowid, None, category,
             applied=True, source="Email Sync", reason=subject,
+            message_id=message_id,
         )
         logger.info(
             "Email created tracking for %s / %s -> %s",

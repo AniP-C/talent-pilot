@@ -377,6 +377,9 @@ def _run_sync(
                 # only ever learned about by mail. Allowlisted to job boards and
                 # ATS vendors — see posting.JOB_LINK_HOSTS for why.
                 link=posting.find_job_link(body),
+                # So the dashboard can open this exact message later. The id
+                # is Gmail's own, which is what its URLs address messages by.
+                message_id=email["id"],
                 db_path=db_path,
             )
             db.mark_email_processed(email["id"], db_path=db_path)

@@ -8,7 +8,13 @@ from urllib.parse import quote
 
 import streamlit as st
 
-from config import CONTACT_EMAIL, EXTENSION_URL, STATUS_LABELS, SUPPORT_URL
+from config import (
+    CONTACT_EMAIL,
+    EXTENSION_URL,
+    GMAIL_ACCOUNT_INDEX,
+    STATUS_LABELS,
+    SUPPORT_URL,
+)
 
 # Deliberately restrained: a few spacing and colour corrections on top of the
 # default theme rather than a full re-skin, so Streamlit upgrades don't break it.
@@ -165,6 +171,34 @@ def invite_mailto() -> str:
         f"mailto:{CONTACT_EMAIL}"
         f"?subject={quote(INVITE_SUBJECT, safe='')}"
         f"&body={quote(INVITE_BODY, safe='')}"
+    )
+
+
+def gmail_message_url(message_id) -> str:
+    """A link that opens one Gmail message, given the id the sync stored.
+
+    ``#all/`` rather than ``#inbox/`` on purpose: an application that has been
+    running a while is exactly the one whose earlier mail has been archived,
+    and an inbox-scoped link to an archived message opens an empty pane. The
+    "all mail" view finds it wherever it now lives.
+
+    ``GMAIL_ACCOUNT_INDEX`` is the ``/u/N/`` slot Gmail assigns in the order
+    accounts were signed into that browser, not anything Google exposes to us
+    — so it is a setting rather than something derived. It is 0 for anyone
+    signed into a single account, which is why that is the default.
+
+    Returns "" when there is no id, which is the normal case for rows the
+    extension saved from a posting and for any update predating this field.
+    Callers render an empty cell rather than a dead link.
+    """
+    message_id = (message_id or "").strip()
+
+    if not message_id:
+        return ""
+
+    return (
+        f"https://mail.google.com/mail/u/{GMAIL_ACCOUNT_INDEX}"
+        f"/#all/{quote(message_id, safe='')}"
     )
 
 
