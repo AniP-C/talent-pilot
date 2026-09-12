@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Talent Pilot \u2014 AI Job Copilot",
-  "version": "2.6.0",
+  "version": "2.6.1",
   "description": "See how a job matches your resume as you open it, save it in one click, and reuse your saved application answers.",
   "permissions": [
     "activeTab",
