@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
+import job_fields
 import posting
 from config import (
     ACTIVE_STATUSES,
@@ -548,41 +549,30 @@ def _find_job_for_email(
     email names a role, that role picks the row; only when it does not does
     the search fall back to the company, and then only when the company has a
     single tracked application.
+
+    Which rows count as "at this company" is ``_rows_for_company`` — the exact
+    stored spelling, or failing that a suffix-insensitive key, so "GN Group"
+    and "GN" are one employer.
     """
     role = (role or "").strip()
+    candidates = _rows_for_company(conn, company_name)
+
+    if not candidates:
+        return None
 
     if role:
+        wanted = role.lower()
+
         # Exact role first, then a containment match so "Senior Platform
         # Engineer" in an email still finds a "Platform Engineer" row.
-        row = conn.execute(
-            """
-            SELECT id, notes, status, role FROM jobs
-            WHERE LOWER(company) = LOWER(?) AND LOWER(role) = LOWER(?)
-            ORDER BY id LIMIT 1
-            """,
-            (company_name, role),
-        ).fetchone()
+        for row in candidates:
+            if (row["role"] or "").lower() == wanted:
+                return row
 
-        if row:
-            return row
-
-        row = conn.execute(
-            """
-            SELECT id, notes, status, role FROM jobs
-            WHERE LOWER(company) = LOWER(?)
-              AND (INSTR(LOWER(?), LOWER(role)) > 0 OR INSTR(LOWER(role), LOWER(?)) > 0)
-            ORDER BY id LIMIT 1
-            """,
-            (company_name, role, role),
-        ).fetchone()
-
-        if row:
-            return row
-
-    candidates = conn.execute(
-        "SELECT id, notes, status, role FROM jobs WHERE LOWER(company) = LOWER(?) ORDER BY id",
-        (company_name,),
-    ).fetchall()
+        for row in candidates:
+            stored = (row["role"] or "").lower()
+            if stored and (stored in wanted or wanted in stored):
+                return row
 
     # Exactly one application at this company — unambiguous, so use it. More
     # than one and there is no way to tell which the email is about; returning
@@ -591,6 +581,41 @@ def _find_job_for_email(
         return candidates[0]
 
     return None
+
+
+def _rows_for_company(
+    conn: sqlite3.Connection, company_name: str
+) -> list[sqlite3.Row]:
+    """Every tracked application at one employer, oldest first.
+
+    The stored spelling is tried first and on its own. Only when nothing
+    carries that exact name does the search fall back to comparing
+    ``job_fields.company_key`` — the name with its corporate suffix, case and
+    punctuation removed — which is what lets a second email from "GN Group"
+    find the application "GN" opened instead of starting a duplicate beside it
+    and leaving the original at the stage it was.
+
+    The fallback never overrides an exact match: where a row already carries
+    the incoming spelling, a near-miss elsewhere in the table cannot steal the
+    email from it.
+    """
+    rows = conn.execute(
+        "SELECT id, notes, status, role, company FROM jobs ORDER BY id"
+    ).fetchall()
+
+    wanted = (company_name or "").strip().lower()
+    if not wanted:
+        return []
+
+    exact = [row for row in rows if (row["company"] or "").strip().lower() == wanted]
+    if exact:
+        return exact
+
+    key = job_fields.company_key(company_name)
+    if not key:
+        return []
+
+    return [row for row in rows if job_fields.company_key(row["company"]) == key]
 
 
 def compose_email_note(

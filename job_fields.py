@@ -140,6 +140,33 @@ def _words(value: str) -> list[str]:
     return [w for w in re.split(r"[\s/,|·–—-]+", value.lower().strip()) if w]
 
 
+def company_key(value: str) -> str:
+    """A comparison key for a company name, with the corporate suffix dropped.
+
+    Two spellings of one employer are the ordinary case in recruiter mail: the
+    confirmation comes from "GN" and the assessment invitation from "GN Group",
+    because a human wrote one and an ATS template the other. Matched on the
+    stored string alone those are two employers, so the second email starts a
+    second application and the first stays at the stage it was — which is
+    exactly what happened to one application in a real inbox.
+
+    Deliberately a key rather than a rename: what was stored stays stored, and
+    this only decides whether an incoming email is about a row that exists.
+
+    Punctuation and case fall away with the suffix, so "Wells Fargo & Company"
+    and "Wells-Fargo" both key as "wellsfargo".
+    """
+    words = [word.strip(".") for word in _words(normalize(value))]
+    kept = [word for word in words if word and word not in _COMPANY_MARKERS]
+
+    # A name made of nothing but suffixes — "The Group" — keeps them. Collapsing
+    # it to an empty key would make it match every other such name.
+    if not kept:
+        kept = words
+
+    return re.sub(r"[^a-z0-9]", "", "".join(kept))
+
+
 def is_placeholder(value: str) -> bool:
     """True when a value carries no information."""
     return normalize(value).lower() in _PLACEHOLDERS

@@ -124,6 +124,49 @@ def test_update_job_from_email_creates_missing_company(jobs_db):
     assert jobs[0]["source"] == "Email Sync"
 
 
+def test_email_finds_the_application_under_a_suffixed_company_name(jobs_db):
+    """"GN" applied to, "GN Group" assessing: one application, not two.
+
+    Straight from a real sync log — the confirmation named the employer one
+    way and the assessment invitation the other, so the second email opened a
+    second row and the first stayed at APPLIED.
+    """
+    job_id = db.add_job("GN", "AI Developer", status="APPLIED", db_path=jobs_db)
+
+    outcome = db.update_job_from_email(
+        "GN Group", "ASSESSMENT", "Your assessment", "Online test link",
+        db_path=jobs_db,
+    )
+
+    assert outcome == "updated"
+    assert len(db.get_all_jobs(db_path=jobs_db)) == 1
+    assert db.get_job(job_id, db_path=jobs_db)["status"] == "ASSESSMENT"
+
+
+def test_suffix_match_does_not_override_an_exact_company(jobs_db):
+    """An exact spelling keeps its own mail, near-miss or not."""
+    loose = db.add_job("Orion", "Engineer", status="APPLIED", db_path=jobs_db)
+    exact = db.add_job("Orion Labs", "Engineer", status="APPLIED", db_path=jobs_db)
+
+    db.update_job_from_email(
+        "Orion Labs", "INTERVIEW", "Interview", "", db_path=jobs_db
+    )
+
+    assert db.get_job(exact, db_path=jobs_db)["status"] == "INTERVIEW"
+    assert db.get_job(loose, db_path=jobs_db)["status"] == "APPLIED"
+
+
+def test_unrelated_companies_are_not_merged_by_the_suffix_match(jobs_db):
+    db.add_job("Onix", "AI Engineer", status="APPLIED", db_path=jobs_db)
+
+    outcome = db.update_job_from_email(
+        "Onyx Systems", "REJECTED", "No thanks", "", db_path=jobs_db
+    )
+
+    assert outcome == "created"
+    assert len(db.get_all_jobs(db_path=jobs_db)) == 2
+
+
 def test_update_job_from_email_rejects_unknown_status(jobs_db):
     with pytest.raises(ValueError):
         db.update_job_from_email("Acme", "UNKNOWN", "s", "r", db_path=jobs_db)
