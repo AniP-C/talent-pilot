@@ -377,10 +377,21 @@ class Screening(NamedTuple):
     reason: str
 
 
-def _sender_address(sender: str) -> str:
+def sender_address(sender: str) -> str:
     """The bare address out of a From header, lowercased."""
     match = re.search(r"<([^>]+)>", sender or "")
     return (match.group(1) if match else (sender or "")).strip().lower()
+
+
+def is_own_mail(sender: str, own_address: str) -> bool:
+    """Whether a message was sent by the account being synced."""
+    own = (own_address or "").strip().lower()
+    return bool(own) and sender_address(sender) == own
+
+
+# "Re:", "Fwd:", "FW:" — including the localised prefixes Gmail writes when the
+# thread started in another language, which are still followed by a colon.
+_THREAD_PREFIX = re.compile(r"^\s*(re|fwd?|fw|aw|sv|res)\s*(\[\d+\])?\s*:", re.IGNORECASE)
 
 
 def screen_email(
@@ -398,13 +409,21 @@ def screen_email(
     # does not see it: a footer is not what a message is about.
     header_lower = f"{sender_lower} {(subject or '').lower()}"
 
-    # Mail the user sent themselves. Their own replies to recruiters match
-    # every content rule below — they are about an application, they quote the
-    # thread — so they were fetched, classified at cost, and then discarded
-    # further down the pipeline as "not an update on an application this user
-    # submitted". Recognising them here makes that free.
-    if own_address and _sender_address(sender) == own_address.strip().lower():
-        return Screening(False, "sent from your own address")
+    # Mail the user sent, of which there are two kinds and only one is waste.
+    #
+    # Their replies on a recruiter's thread match every content rule below —
+    # they are about an application, they quote the thread — and carry nothing
+    # the recruiter's own mail will not say again, so classifying them costs a
+    # model call to be told they are not an update. Those are dropped here.
+    #
+    # An application sent *by* mail is the opposite: where somebody applies by
+    # writing to a careers address, that message is the only evidence the
+    # application exists, and dropping it meant the tracker never heard of the
+    # job at all. So it falls through to the rules below and is judged on its
+    # contents like any other message — "Application for X" carries the same
+    # high-signal phrase a confirmation does.
+    if is_own_mail(sender, own_address) and _THREAD_PREFIX.match(subject or ""):
+        return Screening(False, "your own reply on an existing thread")
 
     # Bulk mail wins over every other signal — a marketing blast from an ATS
     # domain is still a marketing blast.

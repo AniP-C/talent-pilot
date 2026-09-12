@@ -4,10 +4,11 @@ from datetime import datetime
 
 import pytest
 
-from ai.email_classifier import to_status
+import ai.email_classifier as email_classifier
+from ai.email_classifier import classify_email, resolve_company, to_status
 from config import VALID_STATUSES
 from integrations.gmail_client import is_high_probability_job_email, screen_email
-from sync_controller import _email_date
+from sync_controller import _email_date, _primary_recipient
 
 
 # =====================================================================
@@ -180,11 +181,15 @@ def test_the_boolean_wrapper_still_answers_the_old_question():
 # =====================================================================
 # THE USER'S OWN SENT MAIL
 #
-# Their replies to recruiters match every content rule there is — they are
-# about an application and they quote the thread — so they were fetched,
-# classified at cost, and only then discarded downstream as "not an update on
-# an application this user submitted". Seven such calls across three syncs in
-# the log that prompted this.
+# Two kinds, and only one is waste. A reply on a recruiter's thread matches
+# every content rule there is — it is about an application and it quotes the
+# thread — and says nothing the recruiter's own mail will not say again, so
+# classifying it costs a model call to be told it is not an update. Seven such
+# calls across three syncs in the log that prompted this.
+#
+# An application *sent* by mail is the opposite: it is frequently the only
+# evidence the application exists, and dropping it meant the job was never
+# tracked at all.
 # =====================================================================
 def test_your_own_reply_is_rejected_before_it_costs_anything():
     verdict = screen_email(
@@ -195,7 +200,47 @@ def test_your_own_reply_is_rejected_before_it_costs_anything():
     )
 
     assert verdict.passed is False
-    assert verdict.reason == "sent from your own address"
+    assert verdict.reason == "your own reply on an existing thread"
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "Re: Career Opportunity - Forward Deployed AI Engineer",
+        "RE: Your application",
+        "Fwd: Application – Agentic AI Engineer",
+        "FW: Interview",
+        "re : Application",
+    ],
+)
+def test_every_spelling_of_a_thread_reply_is_recognised(subject):
+    assert (
+        screen_email(
+            "Ani Py <anipy2000@gmail.com>",
+            subject,
+            "Thanks, I am interested.",
+            own_address="anipy2000@gmail.com",
+        ).passed
+        is False
+    )
+
+
+def test_an_application_you_sent_yourself_is_kept():
+    """The message the tracker would otherwise never hear about.
+
+    Applying by writing to a careers address produces no confirmation from a
+    human inbox, so this outgoing mail is the only record the application
+    exists. Straight from the log: it was dropped as "sent from your own
+    address" and the job went untracked.
+    """
+    verdict = screen_email(
+        "Ani Py <anipy2000@gmail.com>",
+        "Application for AI/ML Engineer - Pune",
+        "Please find my resume attached for the AI/ML Engineer role.",
+        own_address="anipy2000@gmail.com",
+    )
+
+    assert verdict.passed is True
 
 
 def test_your_own_address_is_matched_however_the_header_is_written():
@@ -206,10 +251,103 @@ def test_your_own_address_is_matched_however_the_header_is_written():
         "Ani Py <ANIPY2000@Gmail.com>",
     ):
         assert (
-            screen_email(sender, "Application", "", own_address="anipy2000@gmail.com")
-            .passed
+            screen_email(
+                sender, "Re: Application", "", own_address="anipy2000@gmail.com"
+            ).passed
             is False
         )
+
+
+def test_a_reply_from_someone_else_is_not_treated_as_yours():
+    """The thread prefix only silences mail the user themselves sent."""
+    assert screen_email(
+        "recruiter@acme.com",
+        "Re: Your application",
+        "We would like to speak with you.",
+        own_address="anipy2000@gmail.com",
+    ).passed is True
+
+
+# =====================================================================
+# WHO THE EMPLOYER IS ON MAIL YOU SENT
+# =====================================================================
+def test_the_employer_on_your_own_application_is_who_you_wrote_to():
+    """From and Reply-To are both the applicant; only To names the company."""
+    company = resolve_company(
+        {"company_name": "Unknown", "role_title": "AI Engineer"},
+        sender="Ani Py <anipy2000@gmail.com>",
+        reply_to="",
+        recipient="careers@onix.com",
+    )
+
+    assert company == "Onix"
+
+
+def test_a_recipient_that_is_a_mail_provider_names_no_employer():
+    """On incoming mail the recipient is the user's own inbox."""
+    assert (
+        resolve_company(
+            {"company_name": "Unknown", "role_title": "AI Engineer"},
+            sender="jobs@indeed.com",
+            recipient="anipy2000@gmail.com",
+        )
+        == ""
+    )
+
+
+def _captured_prompt(monkeypatch) -> list:
+    """Hold onto the prompt instead of calling Gemini."""
+    seen = []
+
+    def fake(prompt, schema, label):
+        seen.append(prompt)
+        return {}
+
+    monkeypatch.setattr(email_classifier, "generate_structured", fake)
+    return seen
+
+
+def test_mail_you_sent_is_classified_as_your_own_application(monkeypatch):
+    """Without this the model answers, correctly by rule 4, that mail from the
+    applicant is not an update on an application — and the job is lost."""
+    seen = _captured_prompt(monkeypatch)
+
+    classify_email(
+        sender="Ani Py <anipy2000@gmail.com>",
+        subject="Application for AI/ML Engineer - Pune",
+        snippet="Please find my resume attached.",
+        recipient="careers@onix.com",
+        from_me=True,
+    )
+
+    prompt = seen[0]
+    assert "SENT BY THE APPLICANT" in prompt
+    assert "TO: careers@onix.com" in prompt
+    # The employer is read off the address it went to, not off gmail.com.
+    assert '"Onix"' in prompt
+
+
+def test_incoming_mail_carries_no_self_sent_rule(monkeypatch):
+    seen = _captured_prompt(monkeypatch)
+
+    classify_email(
+        sender="careers@acme.com",
+        subject="Your application",
+        snippet="Thanks for applying.",
+        recipient="anipy2000@gmail.com",
+    )
+
+    assert "SENT BY THE APPLICANT" not in seen[0]
+
+
+def test_the_first_addressee_is_the_one_that_counts():
+    """`parseaddr` returns nothing at all for a multi-address header."""
+    assert (
+        _primary_recipient("Careers <careers@acme.com>, hr@acme.com")
+        == "Careers <careers@acme.com>"
+    )
+    assert _primary_recipient("careers@acme.com") == "careers@acme.com"
+    assert _primary_recipient("") == ""
 
 
 def test_a_recruiter_at_a_different_address_is_not_mistaken_for_you():

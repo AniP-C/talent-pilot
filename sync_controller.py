@@ -14,7 +14,7 @@ import utils
 import workspace
 from ai.email_classifier import MIN_CONFIDENCE, classify_email, resolve_company, to_status
 from config import GMAIL_THROTTLE_SECONDS, sync_logger as logger
-from integrations.gmail_client import fetch_job_emails, mailbox_address
+from integrations.gmail_client import fetch_job_emails, is_own_mail, mailbox_address
 
 # Per-user sync-log lines are written in the same shape as the shared sync.log,
 # so the dashboard renders both identically.
@@ -69,6 +69,24 @@ def _detach_user_sync_log(handler: Optional[logging.Handler]) -> None:
         return
     logger.removeHandler(handler)
     handler.close()
+
+
+def _primary_recipient(to_header: str) -> str:
+    """The first address on a ``To`` line, as one ``Name <address>`` header.
+
+    A ``To`` line may list several people, and ``parseaddr`` — which is what
+    reads a contact out of a header — returns nothing at all when handed more
+    than one address. On an application sent by mail that would mean the one
+    header naming the employer is silently ignored, so the list is parsed
+    properly and the first recipient, the one it was actually addressed to, is
+    what the rest of the pipeline sees.
+    """
+    pairs = contacts.header_addresses(to_header)
+    if not pairs:
+        return ""
+
+    name, address = pairs[0]
+    return f"{name} <{address}>" if name else address
 
 
 def _email_date(email: dict) -> str:
@@ -236,12 +254,21 @@ def _run_sync(
 
         report(f"[{index + 1}/{len(pending)}] {email['subject'][:60]}")
 
+        # An application the user sent by mail themselves. The bouncer lets
+        # these through — see screen_email — because that outgoing message is
+        # often the only evidence the application exists, and both the model
+        # and the company lookup have to be told which party is the employer.
+        from_me = is_own_mail(email["sender"], own_address)
+        recipient = _primary_recipient(email.get("to", ""))
+
         result = classify_email(
             sender=email["sender"],
             subject=email["subject"],
             snippet=email["snippet"],
             body=email.get("body", ""),
             reply_to=email.get("reply_to", ""),
+            recipient=recipient,
+            from_me=from_me,
         )
 
         if "error" in result:
@@ -255,7 +282,9 @@ def _run_sync(
             continue
 
         status = to_status(result.get("category", ""))
-        company = resolve_company(result, email["sender"], email.get("reply_to", ""))
+        company = resolve_company(
+            result, email["sender"], email.get("reply_to", ""), recipient
+        )
         role = (result.get("role_title") or "").strip()
         confidence = float(result.get("confidence", 1.0) or 0.0)
 
@@ -311,7 +340,12 @@ def _run_sync(
 
         contact = contacts.choose_contact(
             sender=email["sender"],
-            reply_to=email.get("reply_to", ""),
+            # Who to reply to about a message the user sent is whoever they
+            # wrote to. Their own From and Reply-To are themselves, and are
+            # excluded below, so without this an application sent by mail
+            # keeps no contact at all — on exactly the applications where
+            # nobody else will ever write in with one.
+            reply_to=recipient if from_me else email.get("reply_to", ""),
             body=body,
             suggested_name=result.get("recruiter_name", ""),
             suggested_email=result.get("recruiter_email", ""),
