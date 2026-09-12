@@ -127,6 +127,18 @@ API_BASE_URL = PUBLIC_URL or f"http://{API_HOST}:{API_PORT}"
 # them to the public site, because that is where the help lives.
 SITE_URL = os.getenv("SITE_URL", "").rstrip("/") or "https://katchjobs.online"
 
+# The help page, served by the API at /support (see api/server.py). Derived
+# from SITE_URL rather than set separately: the two always live on the same
+# host, and a signed-out visitor sent to the site root lands on a sign-in form
+# instead of the answer they were looking for.
+SUPPORT_URL = f"{SITE_URL}/support"
+
+# Where someone who cannot get in writes to: the signed-out page turns this
+# into a pre-written mailto when registration needs an invite code. Defaults
+# to the address static/privacy.html and static/support.html already publish,
+# and is settable because a fork of this should not mail me.
+CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", "").strip() or "anipy2000@gmail.com"
+
 # The Chrome Web Store listing. Held here, once, so the sidebar, the settings
 # tab and the signed-out page cannot drift apart or go stale separately.
 # Deliberately without the `authuser` and `hl` parameters the store hands out

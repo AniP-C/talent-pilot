@@ -1663,6 +1663,38 @@
             .tp-note { font-size: 11px; color: var(--muted); }
             .tp-warn { font-size: 11px; color: var(--low-fg); }
             .tp-summary { font-size: 12px; color: var(--text-soft); margin-top: 10px; line-height: 1.55; }
+
+            ${placement === "floating" ? `
+                /* The floating card is pinned to the viewport, so unlike the
+                   in-page placement it cannot rely on the posting's own
+                   scrollbar. A full AI match — verdict, competencies, the
+                   reasoning paragraph and two chip lists — is taller than a
+                   laptop screen, and everything past the bottom edge used to
+                   be reachable only by zooming the whole page out. Cap the
+                   card at the viewport instead and let the body scroll under
+                   a head that stays put, so the score and the buttons are
+                   always on screen. */
+                .tp-card {
+                    display: flex;
+                    flex-direction: column;
+                    max-height: calc(100vh - 32px);
+                }
+                .tp-head { flex: 0 0 auto; }
+                .tp-body {
+                    overflow-y: auto;
+                    /* Hitting the end of the list must not hand the scroll on
+                       to the posting underneath. */
+                    overscroll-behavior: contain;
+                    scrollbar-width: thin;
+                    scrollbar-color: var(--track) transparent;
+                }
+                .tp-body::-webkit-scrollbar { width: 8px; }
+                .tp-body::-webkit-scrollbar-track { background: transparent; }
+                .tp-body::-webkit-scrollbar-thumb {
+                    background: var(--track);
+                    border-radius: 999px;
+                }
+            ` : ""}
         `;
 
         return style;

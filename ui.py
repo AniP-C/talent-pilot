@@ -4,9 +4,11 @@ Kept separate from app.py so the page logic stays readable and the styling
 lives in one place.
 """
 
+from urllib.parse import quote
+
 import streamlit as st
 
-from config import EXTENSION_URL, SITE_URL, STATUS_LABELS
+from config import CONTACT_EMAIL, EXTENSION_URL, STATUS_LABELS, SUPPORT_URL
 
 # Deliberately restrained: a few spacing and colour corrections on top of the
 # default theme rather than a full re-skin, so Streamlit upgrades don't break it.
@@ -139,6 +141,49 @@ def contact_line(job: dict) -> str:
     return "↩️ " + " · ".join(parts)
 
 
+# The mail someone sends to ask for a way in. Written out here rather than
+# left to the sender, because an empty compose window is a question they have
+# to phrase themselves, and half of them will not bother — subject, body and
+# address prefilled turns "ask for an invite" into one click and one Send.
+INVITE_SUBJECT = "Invitation code request"
+INVITE_BODY = (
+    "Hi,\n\n"
+    "I would love to try Katch Jobs. Could you please share an invitation "
+    "code so I can create an account?\n\n"
+    "Thanks!"
+)
+
+
+def invite_mailto() -> str:
+    """A ``mailto:`` link with the request already written.
+
+    Everything after the address is percent-encoded, newlines included, so the
+    body survives the mail client and the resulting URL contains no brackets
+    that would end a markdown link early.
+    """
+    return (
+        f"mailto:{CONTACT_EMAIL}"
+        f"?subject={quote(INVITE_SUBJECT, safe='')}"
+        f"&body={quote(INVITE_BODY, safe='')}"
+    )
+
+
+def invite_request_callout(container=None) -> None:
+    """How to get an invite code, on the signed-out page.
+
+    Only worth showing where an invite code is what stands between a visitor
+    and an account: on an open instance there is nothing to ask for. Sits
+    outside the tabs so it is visible from the sign-in side too — someone who
+    has no account often never opens "Create account" to find out why they
+    cannot make one.
+    """
+    target = container or st
+    target.caption(
+        f"✉️ Want to try it? [Email me for an invitation code]({invite_mailto()}) "
+        "— the message is already written, just press send."
+    )
+
+
 def extension_callout(container=None, *, blurb: str = "") -> None:
     """One line pointing at the browser extension, and at the site for help.
 
@@ -156,7 +201,7 @@ def extension_callout(container=None, *, blurb: str = "") -> None:
     target.caption(
         f"🧩 [Get the Talent Pilot extension]({EXTENSION_URL}) — "
         + (blurb or "score and save a job from the posting itself.")
-        + f" More help at [katchjobs.online]({SITE_URL})."
+        + f" More help on the [support page]({SUPPORT_URL})."
     )
 
 

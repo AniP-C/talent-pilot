@@ -260,6 +260,13 @@ def render_auth_screen() -> None:
                         except auth.AuthError as exc:
                             st.error(str(exc))
 
+        # Outside the tabs, so it is there for someone sitting on "Sign in"
+        # with no account to sign in with. Only where a code is what is
+        # missing: an open instance has nothing to ask for, and on a closed
+        # one a code would not let them in either.
+        if SIGNUP_CODE and not REGISTRATION_CLOSED:
+            ui.invite_request_callout()
+
         st.caption(
             "Your data stays on this machine — each account gets its own local database."
         )
